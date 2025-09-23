@@ -1,0 +1,43 @@
+{
+  "add_bos_token": false,
+  "add_eos_token": false,
+  "add_prefix_space": false,
+  "added_tokens_decoder": {
+    "0": {
+      "content": "[END]",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "1": {
+      "content": "[SYS]",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "2": {
+      "content": "[SEP]",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    }
+  },
+  "additional_special_tokens": [],
+  "bos_token": "[SYS]",
+  "clean_up_tokenization_spaces": false,
+  "eos_token": "[END]",
+  "legacy": true,
+  "model_max_length": 32768,
+  "pad_token": "[END]",
+  "sp_model_kwargs": {},
+  "spaces_between_special_tokens": false,
+  "tokenizer_class": "PreTrainedTokenizerFast",
+  "unk_token": "[SEP]",
+  "chat_template": "{% if messages[0]['role'] == 'system' %}{% set system_message = messages[0]['content'] %}{{ '[SYS]system\\n' + system_message + '[END]\\n' }}{% else %}{{ '[SYS]system\\nYou are a helpful assistant[END]\\n' }}{% endif %}{% for message in messages %}{% set content = message['content'] %}{% if message['role'] == 'user' %}{{ '[SYS]user\\n' + content + '[END]\\n[SYS]assistant\\n' }}{% elif message['role'] == 'assistant' %}{{ content + '[SYS]' + '\\n' }}{% endif %}{% endfor %}"
+}
