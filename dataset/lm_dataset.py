@@ -17,6 +17,8 @@ def dynamic_collate_fn(batch):
     """
     动态填充的collate函数，用于处理变长序列
     对Mamba架构特别优化：只填充到批次内最大长度，不浪费计算
+    
+    🔧 标准化：使用Hugging Face标准的-100填充labels
     """
     X_list, Y_list, loss_mask_list = zip(*batch)
     
@@ -29,7 +31,7 @@ def dynamic_collate_fn(batch):
     
     # 初始化填充后的张量
     X_padded = torch.zeros(batch_size, max_len, dtype=torch.long, device=device)
-    Y_padded = torch.zeros(batch_size, max_len, dtype=torch.long, device=device)
+    Y_padded = torch.full((batch_size, max_len), -100, dtype=torch.long, device=device)  # 🔧 填充-100
     loss_mask_padded = torch.zeros(batch_size, max_len, dtype=torch.long, device=device)
     
     # 填充数据
@@ -86,6 +88,10 @@ class PretrainDataset(Dataset):
 
         X = torch.tensor(input_ids[:-1], dtype=torch.long)
         Y = torch.tensor(input_ids[1:], dtype=torch.long)
+        
+        # 🔧 标准化：将pad token位置的labels设为-100（Hugging Face标准）
+        Y = torch.where(Y == self.tokenizer.pad_token_id, -100, Y)
+        
         loss_mask = torch.tensor(loss_mask[1:], dtype=torch.long)
         return X, Y, loss_mask
 
@@ -154,6 +160,10 @@ class SFTDataset(Dataset):
         # 构建训练数据
         X = torch.tensor(input_ids[:-1], dtype=torch.long)
         Y = torch.tensor(input_ids[1:], dtype=torch.long)
+        
+        # 🔧 标准化：将pad token位置的labels设为-100（Hugging Face标准）
+        Y = torch.where(Y == self.tokenizer.pad_token_id, -100, Y)
+        
         loss_mask = torch.tensor(loss_mask[1:], dtype=torch.long)  # 对齐预测位置
 
         return X, Y, loss_mask

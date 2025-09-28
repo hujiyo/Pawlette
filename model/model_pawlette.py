@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from typing import Optional, Tuple, Union, List
+from typing import Optional, Tuple, Union
 from transformers import PretrainedConfig, PreTrainedModel, GenerationMixin
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from mamba_ssm import Mamba2
@@ -9,109 +9,49 @@ from mamba_ssm.utils.generation import InferenceParams
 class PawletteConfig(PretrainedConfig):
     """Pawlette模型配置类"""
     model_type = "pawlette"
-    
-    def __init__(
-        self,
-        # 基础参数
-        vocab_size: int = 6400, 
-        hidden_size: int = 672,  # d_model in Mamba
-        state_size: int = 128,  # SSM state expansion factor (d_state) 
-        conv_size: int = 4,  # Convolution width
-        expand_factor: int = 2,  # Block expansion factor (d_inner = expand_factor * d_model)
-        
-        # 架构参数
-        num_hidden_layers: int = 8, 
-        dropout: float = 0.1,
-        rms_norm_eps: float = 1e-5,
-        use_bias: bool = False,
-        use_conv_bias: bool = True,
-        
-        # Mamba2特定参数 - 完整支持最新特性
-        dt_min: float = 0.001,
-        dt_max: float = 0.1,
-        dt_init_floor: float = 1e-4,
-        dt_limit: tuple = (0.0, float('inf')),
-        
-        # A和D矩阵初始化 - Mamba2核心特性
-        A_init_range: tuple = (1, 16),  # Mamba2的A初始化范围
-        D_has_hdim: bool = False,  # D是否有head维度
-        
-        # 归一化参数
-        rmsnorm: bool = True,  # 是否使用RMSNorm
-        norm_before_gate: bool = False,  # 门控前是否归一化
-        
-        # 分块和头参数 - Mamba2新特性
-        headdim: int = 56,  # 每个头的维度，确保d_inner % headdim == 0 (1248*2=2496, 2496%52=0)
-        ngroups: int = 1,  # SSM参数的组数
-        d_ssm: int = None,  # SSM状态大小，如果为None则使用d_inner
-        chunk_size: int = 32,  # 块大小用于分块处理 (优化内存使用)
-        use_mem_eff_path: bool = True,  # 是否使用内存高效路径 (启用以优化内存)
-        
-        # 特殊token (与tokenizer配置保持一致)
-        bos_token_id: int = 1,  # [SYS]
-        eos_token_id: int = 0,  # [END]
-        pad_token_id: int = 0,  # [END]
-        
-        # 训练参数
-        use_cache: bool = True,
-        tie_word_embeddings: bool = True,
-        
-        # LoRA支持
-        use_lora: bool = False,
-        lora_rank: int = 8,
-        lora_alpha: float = 16.0,
-        lora_dropout: float = 0.1,
-        
-        **kwargs
-    ):
+    def __init__(self,**kwargs):
         super().__init__(**kwargs)
-        self.vocab_size = vocab_size
-        self.hidden_size = hidden_size
-        self.state_size = state_size
-        self.conv_size = conv_size
-        self.expand_factor = expand_factor
-        self.intermediate_size = int(expand_factor * hidden_size)  # d_inner = expand_factor * d_model
+        self.vocab_size = 6400    # 词汇表大小
+        self.hidden_size = 672    # 隐藏层大小
+        self.state_size = 128    # SSM状态大小
+        self.conv_size = 4    # 卷积宽度
+        self.expand_factor = 2    # 块扩展因子
+        self.intermediate_size = self.expand_factor * self.hidden_size    # 中间层大小
         
-        self.num_hidden_layers = num_hidden_layers
-        self.dropout = dropout
-        self.rms_norm_eps = rms_norm_eps
-        self.use_bias = use_bias
-        self.use_conv_bias = use_conv_bias
+        self.num_hidden_layers = 8    # 隐藏层数量
+        self.rms_norm_eps = 1e-5    # RMSNorm的epsilon
+        self.use_bias = False    # 是否使用偏置
+        self.use_conv_bias = True    # 是否使用卷积偏置
         
         # Mamba2参数 - 完整支持
-        self.dt_min = dt_min
-        self.dt_max = dt_max
-        self.dt_init_floor = dt_init_floor
-        self.dt_limit = dt_limit
+        self.dt_min = 0.001    # 最小时间步长
+        self.dt_max = 0.1    # 最大时间步长
+        self.dt_init_floor = 1e-4    # 初始时间步长
+        self.dt_limit = (0.0, float('inf'))    # 时间步长限制
         
         # A和D矩阵初始化参数
-        self.A_init_range = A_init_range
-        self.D_has_hdim = D_has_hdim
+        self.A_init_range = (1, 16)    # A初始化范围
+        self.D_has_hdim = False    # D是否有head维度
         
         # 归一化参数
-        self.rmsnorm = rmsnorm
-        self.norm_before_gate = norm_before_gate
+        self.rmsnorm = True    # 是否使用RMSNorm
+        self.norm_before_gate = False    # 门控前是否归一化
         
         # 分块和头参数
-        self.headdim = headdim
-        self.ngroups = ngroups
-        self.d_ssm = d_ssm
-        self.chunk_size = chunk_size
-        self.use_mem_eff_path = use_mem_eff_path
+        self.headdim = 56   # 每个头的维度
+        self.ngroups = 1    # SSM参数的组数
+        self.d_ssm = None    # SSM状态大小，如果为None则使用d_inner
+        self.chunk_size = 32    # 块大小用于分块处理 (优化内存使用)
+        self.use_mem_eff_path = True    # 是否使用内存高效路径 (启用以优化内存)
         
         # 特殊token
-        self.bos_token_id = bos_token_id
-        self.eos_token_id = eos_token_id
-        self.pad_token_id = pad_token_id
+        self.bos_token_id = 1   # [SYS]   # 开始token
+        self.eos_token_id = 0   # [END]
+        self.pad_token_id = 0   # [END]   # 填充token
         
-        # 其他参数
-        self.use_cache = use_cache
-        self.tie_word_embeddings = tie_word_embeddings
-        self.use_lora = use_lora
-        self.lora_rank = lora_rank
-        self.lora_alpha = lora_alpha
-        self.lora_dropout = lora_dropout
-
+        # 其他默认参数[禁止修改]
+        self.use_cache = True   # 是否使用缓存
+        self.tie_word_embeddings = False   # 是否共享词嵌入权重
 
 class RMSNorm(nn.Module):
     """RMSNorm归一化层"""
@@ -126,18 +66,15 @@ class RMSNorm(nn.Module):
         x = x * torch.rsqrt(variance + self.eps)
         return self.weight * x
 
-
-class PawletteMambaBlock(nn.Module):
+class MambaBlock(nn.Module):
     """Pawlette Mamba2 块"""
     def __init__(self, config: PawletteConfig, layer_idx: int):
         super().__init__()
         self.config = config
-        self.layer_idx = layer_idx
+        self.layer_idx = layer_idx # 层索引
 
         # 输入归一化
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-
-        # Mamba2层 - 完整支持所有参数
         self.mamba = Mamba2(
             d_model=config.hidden_size,
             d_state=config.state_size,
@@ -159,26 +96,10 @@ class PawletteMambaBlock(nn.Module):
             use_mem_eff_path=config.use_mem_eff_path,
             layer_idx=self.layer_idx,
         )
-
-        # Dropout
-        self.dropout = nn.Dropout(config.dropout)
         
-        # 梯度检查点支持
-        self.gradient_checkpointing = False
-        
-    def gradient_checkpointing_enable(self):
-        """启用梯度检查点"""
-        self.gradient_checkpointing = True
-    
-    def gradient_checkpointing_disable(self):
-        """禁用梯度检查点"""
-        self.gradient_checkpointing = False
-        
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
+    def forward(self,hidden_states: torch.Tensor,
         inference_params: Optional[InferenceParams] = None,
-        **kwargs
+        **kwargs # 忽略其他参数，保持兼容性
     ) -> torch.Tensor:
         """
         前向传播
@@ -190,57 +111,37 @@ class PawletteMambaBlock(nn.Module):
         Returns:
             output: [batch_size, seq_len, hidden_size]
         """
-        def mamba_forward(hidden_states):
-            residual = hidden_states
-            hidden_states = self.norm(hidden_states)
-            
-            # Mamba2处理 - 使用正确的推理参数
-            if inference_params is not None:
-                # 推理模式with cache
-                hidden_states = self.mamba(
-                    hidden_states,
-                    inference_params=inference_params
-                )
-            else:
-                # 训练模式
-                hidden_states = self.mamba(hidden_states)
-            
-            # 残差连接
-            hidden_states = self.dropout(hidden_states)
-            hidden_states = residual + hidden_states
-            
-            return hidden_states
+        residual = hidden_states # 残差连接
+        hidden_states = self.norm(hidden_states)
         
-        # 使用梯度检查点（如果启用）
-        if self.gradient_checkpointing and self.training:
-            from torch.utils.checkpoint import checkpoint
-            return checkpoint(mamba_forward, hidden_states, use_reentrant=False)
+        # Mamba2处理 - 使用正确的推理参数
+        if inference_params is not None:
+            # 推理模式with cache
+            hidden_states = self.mamba(hidden_states,inference_params=inference_params)
         else:
-            return mamba_forward(hidden_states)
+            # 训练模式
+            hidden_states = self.mamba(hidden_states)
+               
+        hidden_states = residual + hidden_states # 残差连接
+        return hidden_states
 
 
-class PawletteModel(nn.Module):
-    """Pawlette基础模型"""
-    
-    def __init__(self, config: PawletteConfig):
+class PawletteModelCore(nn.Module):
+    """Pawlette模型核心"""    
+    def __init__(self, config:PawletteConfig):
         super().__init__()
-        self.config = config
+        self.config = config        
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size) # Token嵌入层
         
-        # Token嵌入层
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.dropout = nn.Dropout(config.dropout)
         
-        # Mamba2层堆叠
         self.layers = nn.ModuleList([
-            PawletteMambaBlock(config, layer_idx=i)
+            MambaBlock(config, layer_idx=i)            
             for i in range(config.num_hidden_layers)
-        ])
+        ])# Mamba2层堆叠
         
         # 最终归一化层
-        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        
-        # 初始化权重
-        self.apply(self._init_weights)
+        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)        
+        self.apply(self._init_weights) # 初始化权重
         
     def _init_weights(self, module):
         """初始化权重"""
@@ -293,7 +194,6 @@ class PawletteModel(nn.Module):
         
         # Token嵌入
         hidden_states = self.embed_tokens(input_ids)
-        hidden_states = self.dropout(hidden_states)
         
         # Mamba2不需要在嵌入层处理attention_mask
         # Mamba2通过InferenceParams.lengths_per_sample和use_mem_eff_path自动处理变长序列
@@ -328,62 +228,28 @@ class PawletteModel(nn.Module):
         return hidden_states, all_hidden_states, inference_params
 
 
-class PawletteForCausalLM(PreTrainedModel, GenerationMixin):
+class PawletteModelLLM(PreTrainedModel, GenerationMixin):
     """Pawlette因果语言模型"""
-    
-    config_class = PawletteConfig
-    base_model_prefix = "model"
-    supports_gradient_checkpointing = True
+    base_model_prefix = "model" 
     
     def __init__(self, config: PawletteConfig):
         super().__init__(config)
-        self.config = config
-        
-        # 基础模型
-        self.model = PawletteModel(config)
+        self.config = config        
+        self.model = PawletteModelCore(config) # 基础模型
         
         # 语言模型头
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-        
-        # 权重共享
-        if config.tie_word_embeddings:
-            self.lm_head.weight = self.model.embed_tokens.weight
-        
         # 初始化权重
         self.post_init()
         
     def get_input_embeddings(self):
-        return self.model.embed_tokens
-    
+        return self.model.embed_tokens    
     def set_input_embeddings(self, value):
-        self.model.embed_tokens = value
-    
+        self.model.embed_tokens = value    
     def get_output_embeddings(self):
-        return self.lm_head
-    
+        return self.lm_head    
     def set_output_embeddings(self, new_embeddings):
-        self.lm_head = new_embeddings
-    
-    def gradient_checkpointing_enable(self):
-        """启用梯度检查点"""
-        if hasattr(self.model, 'gradient_checkpointing_enable'):
-            self.model.gradient_checkpointing_enable()
-        else:
-            # 为每个层启用梯度检查点
-            for layer in self.model.layers:
-                if hasattr(layer, 'gradient_checkpointing_enable'):
-                    layer.gradient_checkpointing_enable()
-    
-    def gradient_checkpointing_disable(self):
-        """禁用梯度检查点"""
-        if hasattr(self.model, 'gradient_checkpointing_disable'):
-            self.model.gradient_checkpointing_disable()
-        else:
-            # 为每个层禁用梯度检查点
-            for layer in self.model.layers:
-                if hasattr(layer, 'gradient_checkpointing_disable'):
-                    layer.gradient_checkpointing_disable()
-        
+        self.lm_head = new_embeddings        
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -410,12 +276,11 @@ class PawletteForCausalLM(PreTrainedModel, GenerationMixin):
         Returns:
             模型输出
         """
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
         output_hidden_states = output_hidden_states if output_hidden_states is not None else False
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
         
-        # 初始化InferenceParams（如果未提供且使用缓存）
-        if inference_params is None and use_cache:
+        # 初始化InferenceParams（如果未提供）
+        if inference_params is None:
             batch_size, seq_len = input_ids.shape
             inference_params = InferenceParams(
                 max_seqlen=seq_len,
@@ -431,7 +296,7 @@ class PawletteForCausalLM(PreTrainedModel, GenerationMixin):
             input_ids=input_ids,
             attention_mask=attention_mask,
             inference_params=inference_params,
-            use_cache=use_cache,
+            use_cache=self.config.use_cache,
             output_hidden_states=output_hidden_states,
             return_dict=True
         )
@@ -448,8 +313,8 @@ class PawletteForCausalLM(PreTrainedModel, GenerationMixin):
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             
-            # 展平
-            loss_fct = nn.CrossEntropyLoss(ignore_index=self.config.pad_token_id)
+            # 展平 - 使用标准的ignore_index=-100
+            loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
             loss = loss_fct(
                 shift_logits.view(-1, shift_logits.size(-1)),
                 shift_labels.view(-1)
@@ -484,8 +349,7 @@ class PawletteForCausalLM(PreTrainedModel, GenerationMixin):
             "inference_params": past_key_values,
             "use_cache": kwargs.get("use_cache"),
             "attention_mask": attention_mask,
-        }
-        
+        }        
         return model_inputs
     
     @staticmethod
@@ -521,7 +385,6 @@ class PawletteForCausalLM(PreTrainedModel, GenerationMixin):
                 else:
                     reordered_past[key] = value
             return reordered_past
-
 
 def count_parameters(model):
     """统计模型参数量"""

@@ -13,14 +13,13 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler
 from contextlib import nullcontext
 from transformers import AutoTokenizer
-from model.model_pawlette import PawletteConfig, PawletteForCausalLM, count_parameters
+from model.model_pawlette import PawletteConfig, PawletteModelLLM, count_parameters
 from dataset.lm_dataset import PretrainDataset, dynamic_collate_fn
 
 warnings.filterwarnings('ignore')
 
-# 全局配置 - 只包含训练相关参数
+# 训练相关参数配置
 CONFIG = {
-    
     # 训练配置
     'epochs': 1,
     'batch_size': 16,  # 减小批次大小以降低内存占用
@@ -58,9 +57,6 @@ CONFIG = {
     'seed': 42,
     'use_wandb': False,
     'wandb_project': 'Pawlette-Pretrain',
-    
-    # 内存优化配置
-    'gradient_checkpointing': True,  # 启用梯度检查点以节省内存
 }
 
 # 全局变量
@@ -88,11 +84,12 @@ def get_cosine_schedule_with_warmup(current_step, num_warmup_steps, num_training
     return lr_mult
 
 
-def save_checkpoint(epoch, step, model, optimizer, scaler, best_loss, save_path):
+def save_checkpoint(epoch, step, model, optimizer, scaler, best_loss, save_path, global_step=None):
     """保存检查点"""
     state = {
         'epoch': epoch,
         'step': step,
+        'global_step': global_step,  # 新增：保存全局步数
         'model_state_dict': model.module.state_dict() if isinstance(model, DistributedDataParallel) else model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'scaler_state_dict': scaler.state_dict(),
@@ -105,13 +102,6 @@ def save_checkpoint(epoch, step, model, optimizer, scaler, best_loss, save_path)
 
 def load_checkpoint(model, optimizer, scaler, checkpoint_path, device, strict=True):
     """加载检查点"""
-    # 添加安全的全局类以支持PyTorch 2.6的weights_only模式
-    from model.model_pawlette import PawletteConfig
-
-    # 如果 PyTorch 版本 >= 2.6，则添加安全全局类
-    if hasattr(torch.serialization, 'add_safe_globals'):
-        torch.serialization.add_safe_globals([PawletteConfig])
-    
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     
     # 加载模型状态
@@ -126,65 +116,62 @@ def load_checkpoint(model, optimizer, scaler, checkpoint_path, device, strict=Tr
     
     start_epoch = checkpoint.get('epoch', 0)
     start_step = checkpoint.get('step', 0)
+    start_global_step = checkpoint.get('global_step', 0)  # 新增：加载全局步数
     best_loss = checkpoint.get('best_loss', float('inf'))
     
     Logger(f"✅ 已从 {checkpoint_path} 加载检查点")
-    Logger(f"   继续训练: epoch={start_epoch}, step={start_step}, best_loss={best_loss:.4f}")
+    Logger(f"   继续训练: epoch={start_epoch}, step={start_step}, global_step={start_global_step}, best_loss={best_loss:.4f}")
     
-    return start_epoch, start_step, best_loss
+    return start_epoch, start_step, start_global_step, best_loss
 
 
 def evaluate_model(model, eval_loader, ctx, device):
     """评估模型"""
     model.eval()
     total_loss = 0
-    total_tokens = 0
+    num_batches = 0
     
     with torch.no_grad():
-        for X, Y, loss_mask in eval_loader:
+        for X, Y, _ in eval_loader:  # 忽略loss_mask，使用模型内置的ignore_index
             X = X.to(device)
             Y = Y.to(device)
-            loss_mask = loss_mask.to(device)
             
             with ctx:
                 outputs = model(input_ids=X, labels=Y)
-                
-                # 使用mask计算损失
-                if loss_mask is not None:
-                    loss_values = nn.functional.cross_entropy(
-                        outputs.logits.view(-1, outputs.logits.size(-1)),
-                        Y.view(-1),
-                        reduction='none'
-                    ).view(Y.size())
-                    loss = (loss_values * loss_mask).sum()
-                    num_tokens = loss_mask.sum()
-                else:
-                    loss = outputs.loss * X.size(0) * X.size(1)
-                    num_tokens = X.size(0) * X.size(1)
+                # 直接使用模型计算的损失，它已经处理了pad_token的忽略
+                loss = outputs.loss
                 
                 total_loss += loss.item()
-                total_tokens += num_tokens.item()
+                num_batches += 1
     
-    avg_loss = total_loss / total_tokens if total_tokens > 0 else float('inf')
+    avg_loss = total_loss / num_batches if num_batches > 0 else float('inf')
     model.train()
     return avg_loss
 
 
 def train_epoch(epoch, start_step, model, train_loader, optimizer, scaler, 
-                scheduler_fn, ctx, wandb=None, start_epoch=0):
+                scheduler_fn, ctx, wandb=None, start_epoch=0, start_global_step=0):
     """训练一个epoch"""
     model.train()
-    loss_fct = nn.CrossEntropyLoss(reduction='none')
     
     total_loss = 0
-    total_tokens = 0
     start_time = time.time()
     first_step = True  # 标记是否是第一个实际执行的步骤
     executed_steps = 0  # 实际执行的步数计数器
     
-    for step, (X, Y, loss_mask) in enumerate(train_loader):
+    # 🔧 修复：正确计算全局步数的起始点
+    if epoch == start_epoch:
+        # 断点续训时，从保存的global_step开始
+        current_global_step = start_global_step
+    else:
+        # 新的epoch，基于之前的总步数计算
+        current_global_step = start_global_step + (epoch - start_epoch) * len(train_loader)
+    
+    for step, (X, Y, _) in enumerate(train_loader):  # 忽略loss_mask，使用模型内置的ignore_index
         # 跳过已训练的步骤（用于断点续训）
         if epoch == start_epoch and step < start_step:
+            # 🔧 修复：跳过步骤时也要更新global_step
+            current_global_step += 1
             continue
         
         # 如果是第一个实际执行的步骤，重新设置开始时间
@@ -197,32 +184,15 @@ def train_epoch(epoch, start_step, model, train_loader, optimizer, scaler,
         
         X = X.to(CONFIG['device'])
         Y = Y.to(CONFIG['device'])
-        loss_mask = loss_mask.to(CONFIG['device'])
         
-        # 计算当前步的全局步数（考虑断点续训）
-        if epoch == start_epoch:
-            global_step = step
-        else:
-            global_step = epoch * len(train_loader) + step
-        
-        # 更新学习率
-        lr_mult = scheduler_fn(global_step)
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = CONFIG['learning_rate'] * lr_mult
+        # 🔧 修复：使用正确的全局步数
+        global_step = current_global_step
         
         # 前向传播
         with ctx:
             outputs = model(input_ids=X, labels=Y)
-            
-            # 使用mask计算损失
-            if loss_mask is not None:
-                loss_values = loss_fct(
-                    outputs.logits.view(-1, outputs.logits.size(-1)),
-                    Y.view(-1)
-                ).view(Y.size())
-                loss = (loss_values * loss_mask).sum() / loss_mask.sum()
-            else:
-                loss = outputs.loss
+            # 直接使用模型计算的损失，它已经处理了pad_token的忽略
+            loss = outputs.loss
             
             # 梯度累积
             loss = loss / CONFIG['accumulation_steps']
@@ -232,6 +202,12 @@ def train_epoch(epoch, start_step, model, train_loader, optimizer, scaler,
         
         # 梯度累积步骤
         if (step + 1) % CONFIG['accumulation_steps'] == 0:
+            # 🔧 修复：在优化器步骤前更新学习率
+            optimizer_step = global_step // CONFIG['accumulation_steps']
+            lr_mult = scheduler_fn(optimizer_step)
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = CONFIG['learning_rate'] * lr_mult
+            
             # 梯度裁剪
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), CONFIG['grad_clip'])
@@ -241,12 +217,11 @@ def train_epoch(epoch, start_step, model, train_loader, optimizer, scaler,
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
         
+        # 🔧 修复：每个batch后都要递增global_step
+        current_global_step += 1
+        
         # 统计
         total_loss += loss.item() * CONFIG['accumulation_steps']
-        if loss_mask is not None:
-            total_tokens += loss_mask.sum().item()
-        else:
-            total_tokens += X.numel()
         
         # 日志输出
         if step % CONFIG['log_interval'] == 0:
@@ -262,12 +237,11 @@ def train_epoch(epoch, start_step, model, train_loader, optimizer, scaler,
             
             current_loss = loss.item() * CONFIG['accumulation_steps']
             current_lr = optimizer.param_groups[0]['lr']
-            tokens_per_sec = total_tokens / elapsed_time if elapsed_time > 0 else 0
             
             Logger(
                 f'Epoch:[{epoch+1}/{CONFIG["epochs"]}]({step}/{len(train_loader)}) '
                 f'loss:{current_loss:.4f} lr:{current_lr:.2e} '
-                f'tokens/s:{tokens_per_sec:.0f} eta:{remaining_time:.1f}min'
+                f'eta:{remaining_time:.1f}min'
             )
             
             # WandB日志
@@ -275,14 +249,13 @@ def train_epoch(epoch, start_step, model, train_loader, optimizer, scaler,
                 wandb.log({
                     "train/loss": current_loss,
                     "train/lr": current_lr,
-                    "train/tokens_per_sec": tokens_per_sec,
                     "train/global_step": global_step,
                 })
         
         # 定期保存检查点
         if (step + 1) % CONFIG['save_interval'] == 0 and (not ddp or dist.get_rank() == 0):
             checkpoint_path = os.path.join(CONFIG['save_dir'], 'checkpoint_latest.pth')
-            save_checkpoint(epoch, step + 1, model, optimizer, scaler, total_loss / (step + 1), checkpoint_path)
+            save_checkpoint(epoch, step + 1, model, optimizer, scaler, total_loss / (step + 1), checkpoint_path, global_step)
             
             # 保存模型权重
             model_path = os.path.join(CONFIG['save_dir'], 'pawlette.pth')
@@ -294,15 +267,11 @@ def train_epoch(epoch, start_step, model, train_loader, optimizer, scaler,
     
     # 使用实际执行的步数计算平均损失
     avg_loss = total_loss / max(1, executed_steps)
-    return avg_loss
-
+    return avg_loss, current_global_step  # 🔧 修复：返回最新的global_step
 
 def init_model():
     """初始化模型和分词器"""
-    
-    # 直接使用PawletteConfig的默认配置
     config = PawletteConfig()
-    
     Logger(f"📝 模型配置:")
     Logger(f"   - hidden_size: {config.hidden_size}")
     Logger(f"   - num_layers: {config.num_hidden_layers}")
@@ -310,7 +279,7 @@ def init_model():
     Logger(f"   - vocab_size: {config.vocab_size}")
     
     # 创建模型
-    model = PawletteForCausalLM(config)
+    model = PawletteModelLLM()
     
     # 加载预训练权重（如果指定）
     if CONFIG['continue_pretrain'] and CONFIG['pretrained_path']:
@@ -322,22 +291,14 @@ def init_model():
         else:
             Logger(f"⚠️ 预训练模型文件不存在: {CONFIG['pretrained_path']}")
     
-    # 加载分词器
-    if os.path.exists(CONFIG['tokenizer_path']):
-        tokenizer = AutoTokenizer.from_pretrained(CONFIG['tokenizer_path'], trust_remote_code=True)
-    else:
-        Logger(f"⚠️ 使用默认分词器，未找到: {CONFIG['tokenizer_path']}")
-        from transformers import GPT2Tokenizer
-        tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
-        tokenizer.pad_token = tokenizer.eos_token
-    
+    # 加载分词器（官方AutoTokenizer）
+    tokenizer = AutoTokenizer.from_pretrained('./model/', use_fast=True)
+    config.pad_token_id = tokenizer.pad_token_id
+    config.bos_token_id = tokenizer.bos_token_id
+    config.eos_token_id = tokenizer.eos_token_id
+
     # 移动模型到设备
     model = model.to(CONFIG['device'])
-    
-    # 启用梯度检查点以节省内存
-    if CONFIG['gradient_checkpointing']:
-        model.gradient_checkpointing_enable()
-        Logger("✅ 已启用梯度检查点以优化内存使用")
     
     # 统计参数量
     params = count_parameters(model)
@@ -451,14 +412,17 @@ def main():
     # 混合精度训练
     scaler = torch.cuda.amp.GradScaler(enabled=(CONFIG['dtype'] in ['float16', 'bfloat16']))
     
-    # 学习率调度器
-    total_steps = len(train_loader) * CONFIG['epochs']
+    # 🔧 修复：学习率调度器 - 基于实际的优化器步数而非batch数
+    total_batches = len(train_loader) * CONFIG['epochs']
+    total_optimizer_steps = total_batches // CONFIG['accumulation_steps']  # 实际的优化器更新次数
+    warmup_optimizer_steps = CONFIG['warmup_steps'] // CONFIG['accumulation_steps']  # 对应的warmup步数
+    
     scheduler_fn = lambda step: get_cosine_schedule_with_warmup(
-        step, CONFIG['warmup_steps'], total_steps, min_lr_ratio=0.1
+        step, warmup_optimizer_steps, total_optimizer_steps, min_lr_ratio=0.1
     )
     
     # 断点续训 - 自动检测检查点文件
-    start_epoch, start_step = 0, 0
+    start_epoch, start_step, start_global_step = 0, 0, 0
     best_loss = float('inf')
     
     # 自动检测检查点文件
@@ -466,14 +430,14 @@ def main():
     if os.path.exists(checkpoint_path):
         Logger(f"🔍 自动检测到检查点文件: {checkpoint_path}")
         Logger("🔄 自动启用断点续训...")
-        start_epoch, start_step, best_loss = load_checkpoint(
+        start_epoch, start_step, start_global_step, best_loss = load_checkpoint(
             model, optimizer, scaler, checkpoint_path, CONFIG['device']
         )
     elif CONFIG['resume'] and CONFIG['checkpoint_path']:
         # 如果手动指定了检查点路径
         checkpoint_path = CONFIG['checkpoint_path']
         if os.path.exists(checkpoint_path):
-            start_epoch, start_step, best_loss = load_checkpoint(
+            start_epoch, start_step, start_global_step, best_loss = load_checkpoint(
                 model, optimizer, scaler, checkpoint_path, CONFIG['device']
             )
         else:
@@ -509,6 +473,9 @@ def main():
     if CONFIG['ddp']:
         model = DistributedDataParallel(model, device_ids=[CONFIG['ddp_local_rank']])
     
+    # 🔧 修复：初始化当前的全局步数跟踪
+    current_global_step = start_global_step
+    
     # 训练循环
     Logger("🚀 开始训练...")
     for epoch in range(start_epoch, CONFIG['epochs']):
@@ -516,11 +483,11 @@ def main():
             train_sampler.set_epoch(epoch)
         
         # 训练一个epoch
-        avg_loss = train_epoch(
+        avg_loss, current_global_step = train_epoch(
             epoch, 
             start_step if epoch == start_epoch else 0,
             model, train_loader, optimizer, scaler,
-            scheduler_fn, ctx, wandb, start_epoch
+            scheduler_fn, ctx, wandb, start_epoch, current_global_step
         )
         
         Logger(f"📈 Epoch {epoch+1}/{CONFIG['epochs']} - 平均损失: {avg_loss:.4f}")
@@ -546,7 +513,7 @@ def main():
         # 保存epoch检查点
         if not CONFIG['ddp'] or dist.get_rank() == 0:
             checkpoint_path = os.path.join(CONFIG['save_dir'], f'checkpoint_epoch_{epoch+1}.pth')
-            save_checkpoint(epoch + 1, 0, model, optimizer, scaler, best_loss, checkpoint_path)
+            save_checkpoint(epoch + 1, 0, model, optimizer, scaler, best_loss, checkpoint_path, current_global_step)
     
     # 保存最终模型
     if not CONFIG['ddp'] or dist.get_rank() == 0:
