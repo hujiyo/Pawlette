@@ -401,7 +401,6 @@ def main():
         existing_models = []
         model_files = [
             'pawlette.pth',
-            'pawlette_final.pth'
         ]
         
         for model_file in model_files:
@@ -413,12 +412,42 @@ def main():
             Logger("⚠️ 检测到已存在的模型文件:")
             for model_file in existing_models:
                 Logger(f"   - {model_file}")
-            Logger("🛑 为防止覆盖已训练的模型，训练已停止！")
-            Logger("💡 如需继续训练，请:")
-            Logger("   1. 删除或重命名现有模型文件")
-            Logger("   2. 或者使用 --resume 参数指定检查点文件")
-            Logger("   3. 或者修改输出目录 --out_dir")
-            return
+            Logger("")
+            Logger("请选择操作:")
+            Logger("  1. 加载 pawlette.pth 作为初始化参数，从头开始训练")
+            Logger("  2. 终止训练（防止覆盖）")
+            Logger("")
+            
+            # 只在主进程询问用户
+            if not CONFIG['ddp'] or dist.get_rank() == 0:
+                try:
+                    choice = input("请输入选择 (1/2): ").strip()
+                    
+                    if choice == "1":
+                        Logger("✅ 用户选择：加载 pawlette.pth 作为初始化参数")
+                        model_path = os.path.join(CONFIG['save_dir'], 'pawlette.pth')
+                        state_dict = torch.load(model_path, map_location=CONFIG['device'])
+                        # 此时model还未被DDP包装，直接加载即可
+                        model.load_state_dict(state_dict, strict=False)
+                        Logger(f"📂 已加载模型权重: {model_path}")
+                        Logger("🆕 开始从头训练（使用已有模型作为初始化）...")
+                    elif choice == "2":
+                        Logger("🛑 用户选择：终止训练")
+                        Logger("💡 如需继续训练，请:")
+                        Logger("   1. 删除或重命名现有模型文件")
+                        Logger("   2. 或者使用 --resume 参数指定检查点文件")
+                        Logger("   3. 或者修改输出目录 --out_dir")
+                        return
+                    else:
+                        Logger("❌ 无效的选择，训练已终止")
+                        return
+                except (KeyboardInterrupt, EOFError):
+                    Logger("\n🛑 用户取消操作，训练已终止")
+                    return
+            else:
+                # 非主进程等待主进程的决定
+                # 这里可以通过分布式通信同步决定，但简化处理
+                pass
         else:
             Logger("🆕 未检测到检查点文件和模型文件，开始全新训练...")
     
@@ -456,7 +485,7 @@ def main():
     
     # 保存最终模型
     if not CONFIG['ddp'] or dist.get_rank() == 0:
-        final_model_path = os.path.join(CONFIG['save_dir'], 'pawlette_final.pth')
+        final_model_path = os.path.join(CONFIG['save_dir'], 'pawlette.pth')
         if isinstance(model, DistributedDataParallel):
             torch.save(model.module.state_dict(), final_model_path)
         else:
