@@ -31,7 +31,6 @@ CONFIG = {
     
     # 数据配置
     'data_path': '../dataset/pretrain_data.jsonl',
-    'eval_data_path': None,
     'max_seq_len': None,  # 不限制序列长度
     'tokenizer_path': '../model/',
     
@@ -39,7 +38,6 @@ CONFIG = {
     'out_dir': '../out',
     'log_interval': 100,
     'save_interval': 500,
-    'eval_interval': 500,
     
     # 继续训练配置
     'continue_pretrain': False,
@@ -53,20 +51,15 @@ CONFIG = {
     
     # 其他配置
     'device': 'cuda:0' if torch.cuda.is_available() else 'cpu',
-    'dtype': 'bfloat16',
     'seed': 42,
     'use_wandb': False,
     'wandb_project': 'Pawlette-Pretrain',
 }
 
-# 全局变量
-ddp = CONFIG['ddp']
-
-
 def Logger(content):
     """统一的日志输出函数"""
     try:
-        if not ddp or dist.get_rank() == 0:
+        if not CONFIG['ddp'] or dist.get_rank() == 0:
             print(f"[Pawlette] {content}")
     except NameError:
         print(f"[Pawlette] {content}")
@@ -123,30 +116,6 @@ def load_checkpoint(model, optimizer, scaler, checkpoint_path, device, strict=Tr
     Logger(f"   继续训练: epoch={start_epoch}, step={start_step}, global_step={start_global_step}, best_loss={best_loss:.4f}")
     
     return start_epoch, start_step, start_global_step, best_loss
-
-
-def evaluate_model(model, eval_loader, ctx, device):
-    """评估模型"""
-    model.eval()
-    total_loss = 0
-    num_batches = 0
-    
-    with torch.no_grad():
-        for X, Y, _ in eval_loader:  # 忽略loss_mask，使用模型内置的ignore_index
-            X = X.to(device)
-            Y = Y.to(device)
-            
-            with ctx:
-                outputs = model(input_ids=X, labels=Y)
-                # 直接使用模型计算的损失，它已经处理了pad_token的忽略
-                loss = outputs.loss
-                
-                total_loss += loss.item()
-                num_batches += 1
-    
-    avg_loss = total_loss / num_batches if num_batches > 0 else float('inf')
-    model.train()
-    return avg_loss
 
 
 def train_epoch(epoch, start_step, model, train_loader, optimizer, scaler, 
@@ -245,7 +214,7 @@ def train_epoch(epoch, start_step, model, train_loader, optimizer, scaler,
             )
             
             # WandB日志
-            if wandb is not None and (not ddp or dist.get_rank() == 0):
+            if wandb is not None and (not CONFIG['ddp'] or dist.get_rank() == 0):
                 wandb.log({
                     "train/loss": current_loss,
                     "train/lr": current_lr,
@@ -253,7 +222,7 @@ def train_epoch(epoch, start_step, model, train_loader, optimizer, scaler,
                 })
         
         # 定期保存检查点
-        if (step + 1) % CONFIG['save_interval'] == 0 and (not ddp or dist.get_rank() == 0):
+        if (step + 1) % CONFIG['save_interval'] == 0 and (not CONFIG['ddp'] or dist.get_rank() == 0):
             checkpoint_path = os.path.join(CONFIG['save_dir'], 'checkpoint_latest.pth')
             save_checkpoint(epoch, step + 1, model, optimizer, scaler, total_loss / (step + 1), checkpoint_path, global_step)
             
@@ -268,6 +237,7 @@ def train_epoch(epoch, start_step, model, train_loader, optimizer, scaler,
     # 使用实际执行的步数计算平均损失
     avg_loss = total_loss / max(1, executed_steps)
     return avg_loss, current_global_step  # 🔧 修复：返回最新的global_step
+
 
 def init_model():
     """初始化模型和分词器"""
@@ -323,16 +293,19 @@ def init_distributed_mode():
 
 
 def main():
-    """主训练函数"""
-    global ddp
+    """
+    Pawlette模型预训练主函数
     
+    预训练阶段特点：
+    - 只使用训练数据，不需要验证集
+    - 目标是学习语言的统计规律和表示
+    - 通过训练损失监控训练进度
+    - 定期保存检查点用于断点续训
+    """
     # 设置随机种子
     torch.manual_seed(CONFIG['seed'])
     if torch.cuda.is_available():
         torch.cuda.manual_seed(CONFIG['seed'])
-    
-    # 设置全局变量
-    ddp = CONFIG['ddp']
     
     # 初始化分布式训练
     if CONFIG['ddp']:
@@ -352,19 +325,13 @@ def main():
     Logger("🐾 Pawlette预训练开始")
     Logger(f"📁 输出目录: {CONFIG['save_dir']}")
     
-    # 设置设备和混合精度
+    # 设置设备和混合精度（固定使用bfloat16）
     device_type = "cuda" if "cuda" in CONFIG['device'] else "cpu"
-    dtype_map = {
-        "float32": torch.float32,
-        "float16": torch.float16,
-        "bfloat16": torch.bfloat16,
-    }
-    torch_dtype = dtype_map[CONFIG['dtype']]
-    ctx = nullcontext() if device_type == "cpu" else torch.cuda.amp.autocast(dtype=torch_dtype)
+    ctx = nullcontext() if device_type == "cpu" else torch.cuda.amp.autocast(dtype=torch.bfloat16)
+    Logger(f"🔢 训练精度: bfloat16 (混合精度训练)")
     
     # 初始化模型和分词器
     model, tokenizer, config = init_model()
-    
     
     # 准备数据集
     train_dataset = PretrainDataset(CONFIG['data_path'], tokenizer, max_length=CONFIG['max_seq_len'])
@@ -387,19 +354,6 @@ def main():
         collate_fn=dynamic_collate_fn if CONFIG['max_seq_len'] is None else None,
     )
     
-    # 验证数据集（如果有）
-    eval_loader = None
-    if CONFIG['eval_data_path'] and os.path.exists(CONFIG['eval_data_path']):
-        eval_dataset = PretrainDataset(CONFIG['eval_data_path'], tokenizer, max_length=CONFIG['max_seq_len'])
-        eval_loader = DataLoader(
-            eval_dataset,
-            batch_size=CONFIG['batch_size'],
-            shuffle=False,
-            num_workers=CONFIG['num_workers'],
-            pin_memory=True,
-            collate_fn=dynamic_collate_fn if CONFIG['max_seq_len'] is None else None,
-        )
-        Logger(f"📚 验证数据集大小: {len(eval_dataset)}")
     
     # 优化器
     optimizer = optim.AdamW(
@@ -409,8 +363,8 @@ def main():
         betas=(0.9, 0.95),
     )
     
-    # 混合精度训练
-    scaler = torch.cuda.amp.GradScaler(enabled=(CONFIG['dtype'] in ['float16', 'bfloat16']))
+    # 混合精度训练（bfloat16）
+    scaler = torch.cuda.amp.GradScaler(enabled=True)
     
     # 🔧 修复：学习率调度器 - 基于实际的优化器步数而非batch数
     total_batches = len(train_loader) * CONFIG['epochs']
@@ -423,7 +377,7 @@ def main():
     
     # 断点续训 - 自动检测检查点文件
     start_epoch, start_step, start_global_step = 0, 0, 0
-    best_loss = float('inf')
+    best_loss = float('inf')  # 用于保存检查点，不再用于模型选择
     
     # 自动检测检查点文件
     checkpoint_path = os.path.join(CONFIG['save_dir'], 'checkpoint_latest.pth')
@@ -447,7 +401,6 @@ def main():
         existing_models = []
         model_files = [
             'pawlette.pth',
-            'pawlette_best.pth', 
             'pawlette_final.pth'
         ]
         
@@ -492,28 +445,14 @@ def main():
         
         Logger(f"📈 Epoch {epoch+1}/{CONFIG['epochs']} - 平均损失: {avg_loss:.4f}")
         
-        # 评估（如果有验证集）
-        if eval_loader is not None and (not CONFIG['ddp'] or dist.get_rank() == 0):
-            eval_loss = evaluate_model(model, eval_loader, ctx, CONFIG['device'])
-            Logger(f"📊 验证损失: {eval_loss:.4f}")
-            
-            if wandb is not None:
-                wandb.log({"eval/loss": eval_loss, "epoch": epoch})
-            
-            # 保存最佳模型
-            if eval_loss < best_loss:
-                best_loss = eval_loss
-                best_model_path = os.path.join(CONFIG['save_dir'], 'pawlette_best.pth')
-                if isinstance(model, DistributedDataParallel):
-                    torch.save(model.module.state_dict(), best_model_path)
-                else:
-                    torch.save(model.state_dict(), best_model_path)
-                Logger(f"🏆 保存最佳模型 (loss={best_loss:.4f})")
+        # 记录训练损失到WandB
+        if wandb is not None and (not CONFIG['ddp'] or dist.get_rank() == 0):
+            wandb.log({"train/epoch_loss": avg_loss, "epoch": epoch})
         
         # 保存epoch检查点
         if not CONFIG['ddp'] or dist.get_rank() == 0:
             checkpoint_path = os.path.join(CONFIG['save_dir'], f'checkpoint_epoch_{epoch+1}.pth')
-            save_checkpoint(epoch + 1, 0, model, optimizer, scaler, best_loss, checkpoint_path, current_global_step)
+            save_checkpoint(epoch + 1, 0, model, optimizer, scaler, avg_loss, checkpoint_path, current_global_step)
     
     # 保存最终模型
     if not CONFIG['ddp'] or dist.get_rank() == 0:

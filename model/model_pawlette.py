@@ -47,7 +47,7 @@ class PawletteConfig(PretrainedConfig):
         # 特殊token
         self.bos_token_id = 1   # [SYS]   # 开始token
         self.eos_token_id = 0   # [END]
-        self.pad_token_id = 0   # [END]   # 填充token
+        self.pad_token_id = 2   # [SEP] - 使用不同的token避免与eos混淆
         
         # 其他默认参数[禁止修改]
         self.use_cache = True   # 是否使用缓存
@@ -340,14 +340,22 @@ class PawletteModelLLM(PreTrainedModel, GenerationMixin):
         **kwargs
     ):
         """为生成准备输入"""
-        # 如果使用缓存，只需要最后一个token
+        # 将transformers的DynamicCache转换为InferenceParams
+        inference_params = None
         if past_key_values is not None:
-            input_ids = input_ids[:, -1:]
+            # 检查是否是InferenceParams
+            if isinstance(past_key_values, InferenceParams):
+                inference_params = past_key_values
+                input_ids = input_ids[:, -1:]  # 只需要最后一个token
+            else:
+                # 如果是其他类型的cache（如DynamicCache），忽略并重新初始化
+                # 这会导致性能下降，但能保证兼容性
+                inference_params = None
         
         model_inputs = {
             "input_ids": input_ids,
-            "inference_params": past_key_values,
-            "use_cache": kwargs.get("use_cache"),
+            "inference_params": inference_params,
+            "use_cache": kwargs.get("use_cache", True),
             "attention_mask": attention_mask,
         }        
         return model_inputs

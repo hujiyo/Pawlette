@@ -4,72 +4,10 @@ import warnings
 import numpy as np
 import torch
 from model.model_pawlette import PawletteConfig, PawletteModelLLM
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, TextStreamer
 from typing import List, Dict
 
 warnings.filterwarnings('ignore')
-
-
-def manual_generate_optimized(model, tokenizer, input_ids, max_new_tokens=4096, temperature=0.85, top_p=0.85):
-    """优化的生成函数，专门针对Mamba架构
-
-    关键优化：
-    - 首步传入完整提示；后续步仅传入最后一个 token
-    - 在循环中复用 outputs.past_key_values (InferenceParams) 作为缓存
-    """
-    model.eval()
-    generated_ids = input_ids.clone()
-    inference_params = None  # 循环内复用 Mamba2 缓存
-
-    with torch.no_grad():
-        for i in range(max_new_tokens):
-            # 仅在第一步传完整序列；之后只传最后一个token，并复用缓存
-            step_input = generated_ids if inference_params is None else generated_ids[:, -1:]
-
-            outputs = model(
-                step_input,
-                use_cache=True,
-                inference_params=inference_params,
-            )
-            logits = outputs.logits[:, -1, :]
-            inference_params = outputs.past_key_values  # 复用缓存
-
-            if temperature > 0:
-                logits = logits / temperature
-
-            if top_p < 1.0:
-                probs = torch.softmax(logits, dim=-1)
-                sorted_probs, sorted_indices = torch.sort(probs, descending=True)
-                cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
-                # 保留使累计概率<=top_p的最小前缀
-                cutoff = (cumulative_probs > top_p).float()
-                cutoff[..., 1:] = cutoff[..., :-1].clone()
-                cutoff[..., 0] = 0
-                # 将被移除的概率置零并重新归一化
-                filtered_probs = sorted_probs.masked_fill(cutoff.bool(), 0.0)
-                filtered_probs = filtered_probs / filtered_probs.sum(dim=-1, keepdim=True)
-                # 从过滤后的分布采样，再映射回原索引
-                next_sorted_index = torch.multinomial(filtered_probs, num_samples=1)
-                next_token = sorted_indices.gather(1, next_sorted_index)
-            else:
-                if temperature == 0.0:
-                    # 贪婪
-                    next_token = torch.argmax(logits, dim=-1, keepdim=True)
-                else:
-                    probs = torch.softmax(logits, dim=-1)
-                    next_token = torch.multinomial(probs, num_samples=1)
-            
-
-            # 结束符
-            eos_id = tokenizer.eos_token_id
-            if eos_id is None:
-                eos_id = getattr(model.config, 'eos_token_id', None)
-            if eos_id is not None and next_token.item() == eos_id:
-                break
-
-            generated_ids = torch.cat([generated_ids, next_token], dim=1)
-
-    return generated_ids
 
 
 def apply_chat_template_simple(messages: List[Dict[str, str]], add_generation_prompt: bool = True) -> str:
@@ -115,7 +53,7 @@ def init_model(args):
 
     if args.load == 0:
         config = PawletteConfig()
-        modes = {0: 'pretrain', 1: 'full_sft', 2: 'rlhf', 3: 'reason', 4: 'grpo'}
+        modes = {0: 'pretrain', 1: 'full_sft', 2: 'rlhf'}
         if args.model_mode == 0:
             ckp = f'./{args.out_dir}/pawlette/pawlette.pth'
         else:
@@ -125,13 +63,13 @@ def init_model(args):
         model.load_state_dict(torch.load(ckp, map_location='cpu'), strict=False)
         # 推理侧对齐词表大小（如分词器更大）
         _resize_embeddings_if_needed(model, tokenizer)
-        # 对齐特殊 token id（若缺省则回落到 config）
-        if model.config.pad_token_id is None and tokenizer.pad_token_id is not None:
-            model.config.pad_token_id = tokenizer.pad_token_id
-        if model.config.eos_token_id is None and tokenizer.eos_token_id is not None:
-            model.config.eos_token_id = tokenizer.eos_token_id
-        if model.config.bos_token_id is None and tokenizer.bos_token_id is not None:
-            model.config.bos_token_id = tokenizer.bos_token_id
+        
+        # 将tokenizer的特殊token对齐到模型config（避免警告）
+        # 注意：这里以model.config为准，因为它已经正确设置了不同的pad_token_id
+        tokenizer.pad_token_id = model.config.pad_token_id
+        tokenizer.eos_token_id = model.config.eos_token_id
+        tokenizer.bos_token_id = model.config.bos_token_id
+        
         model = model.to(args.device)
     else:
         raise NotImplementedError("transformers model loading not supported in this version.")
@@ -161,8 +99,6 @@ def get_prompt_datas(args):
                 '详细的介绍光速的物理概念。',
                 '推荐一些杭州的特色美食吧。',
                 '请为我讲解"大语言模型"这个概念。',
-                '如何理解ChatGPT？',
-                'Introduce the history of the United States, please.'
             ]
         else:
             lora_prompt_datas = {
@@ -176,7 +112,6 @@ def get_prompt_datas(args):
                     '我咳嗽已经持续了两周，需要去医院检查吗？',
                     '服用抗生素时需要注意哪些事项？',
                     '体检报告中显示胆固醇偏高，我该怎么办？',
-                    '孕妇在饮食上需要注意什么？',
                     '老年人如何预防骨质疏松？',
                     '我最近总是感到焦虑，应该怎么缓解？',
                     '如果有人突然晕倒，应该如何急救？'
@@ -207,7 +142,7 @@ def main():
     parser.add_argument('--history_cnt', default=0, type=int)
     parser.add_argument('--load', default=0, type=int, help="0: 原生torch权重，1: transformers加载")
     parser.add_argument('--model_mode', default=0, type=int,
-                        help="0: 预训练模型，1: SFT-Chat模型，2: RLHF-Chat模型，3: Reason模型，4: RLAIF-Chat模型")
+                        help="0: 预训练模型，1: SFT-Chat模型，2: RLHF-Chat模型")
     args = parser.parse_args()
 
     model, tokenizer = init_model(args)
@@ -254,27 +189,44 @@ def main():
         input_ids = tokenizer.encode(new_prompt, add_special_tokens=True)
         inputs = torch.tensor([input_ids], device=args.device)
 
-        print('🤖️: ', end='')
+        print('🤖️: ', end='', flush=True)
+
+        # 使用transformers官方的TextStreamer进行流式输出
+        streamer = TextStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
 
         try:
-            generated_ids = manual_generate_optimized(
-                model,
-                tokenizer,
-                inputs,
-                max_new_tokens=min(args.max_seq_len - len(input_ids), 4096),
-                temperature=args.temperature,
-                top_p=args.top_p
-            )
+            # 使用模型的标准generate方法，支持官方TextStreamer
+            if args.temperature == 0.0:
+                # 温度为0时使用贪婪解码
+                generated_ids = model.generate(
+                    inputs,
+                    max_new_tokens=min(args.max_seq_len - len(input_ids), 128),
+                    do_sample=False,  # 贪婪解码
+                    pad_token_id=tokenizer.pad_token_id,
+                    eos_token_id=tokenizer.eos_token_id,
+                    streamer=streamer,
+                )
+            else:
+                # 温度>0时使用采样
+                generated_ids = model.generate(
+                    inputs,
+                    max_new_tokens=min(args.max_seq_len - len(input_ids), 128),
+                    do_sample=True,
+                    temperature=args.temperature,
+                    top_p=args.top_p,
+                    pad_token_id=tokenizer.pad_token_id,
+                    eos_token_id=tokenizer.eos_token_id,
+                    streamer=streamer,
+                )
             response_ids = generated_ids[0][inputs.shape[1]:].tolist()
-            response = tokenizer.decode(response_ids, skip_special_tokens=True)
-            print(response)
+            response_final = tokenizer.decode(response_ids, skip_special_tokens=True)
         except Exception as e:
             print(f"生成失败: {e}")
-            response = "生成失败"
+            response_final = "生成失败"
         
         # 只有在非测试模式下才添加助手回复到对话历史中
         if test_mode == 0 or args.history_cnt > 0:
-            messages.append({"role": "assistant", "content": response})
+            messages.append({"role": "assistant", "content": response_final})
         
         print('\n')
 
