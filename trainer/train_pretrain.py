@@ -136,7 +136,7 @@ def train_epoch(epoch, start_step, model, train_loader, optimizer, scaler,
         # 新的epoch，基于之前的总步数计算
         current_global_step = start_global_step + (epoch - start_epoch) * len(train_loader)
     
-    for step, (X, Y, _) in enumerate(train_loader):  # 忽略loss_mask，使用模型内置的ignore_index
+    for step, (input_ids, labels, loss_mask) in enumerate(train_loader):
         # 跳过已训练的步骤（用于断点续训）
         if epoch == start_epoch and step < start_step:
             # 🔧 修复：跳过步骤时也要更新global_step
@@ -151,16 +151,18 @@ def train_epoch(epoch, start_step, model, train_loader, optimizer, scaler,
         # 增加实际执行的步数计数
         executed_steps += 1
         
-        X = X.to(CONFIG['device'])
-        Y = Y.to(CONFIG['device'])
+        input_ids = input_ids.to(CONFIG['device'])
+        labels = labels.to(CONFIG['device'])
+        loss_mask = loss_mask.to(CONFIG['device'])
         
         # 🔧 修复：使用正确的全局步数
         global_step = current_global_step
         
         # 前向传播
         with ctx:
-            outputs = model(input_ids=X, labels=Y)
-            # 直接使用模型计算的损失，它已经处理了pad_token的忽略
+            outputs = model(input_ids=input_ids, labels=labels)
+            
+            # 🔧 标准化：使用模型自带的loss计算（模型内部会自动处理shift）
             loss = outputs.loss
             
             # 梯度累积
@@ -169,14 +171,13 @@ def train_epoch(epoch, start_step, model, train_loader, optimizer, scaler,
         # 反向传播
         scaler.scale(loss).backward()
         
+        # 更新学习率（每个batch都更新，与old版本一致）
+        lr_mult = scheduler_fn(global_step)
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = CONFIG['learning_rate'] * lr_mult
+        
         # 梯度累积步骤
         if (step + 1) % CONFIG['accumulation_steps'] == 0:
-            # 🔧 修复：在优化器步骤前更新学习率
-            optimizer_step = global_step // CONFIG['accumulation_steps']
-            lr_mult = scheduler_fn(optimizer_step)
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = CONFIG['learning_rate'] * lr_mult
-            
             # 梯度裁剪
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), CONFIG['grad_clip'])
@@ -368,13 +369,11 @@ def main():
     # 混合精度训练（bfloat16）
     scaler = torch.cuda.amp.GradScaler(enabled=True)
     
-    # 🔧 修复：学习率调度器 - 基于实际的优化器步数而非batch数
-    total_batches = len(train_loader) * CONFIG['epochs']
-    total_optimizer_steps = total_batches // CONFIG['accumulation_steps']  # 实际的优化器更新次数
-    warmup_optimizer_steps = CONFIG['warmup_steps'] // CONFIG['accumulation_steps']  # 对应的warmup步数
+    # 学习率调度器 - 基于batch步数（与old版本一致）
+    total_steps = len(train_loader) * CONFIG['epochs']
     
     scheduler_fn = lambda step: get_cosine_schedule_with_warmup(
-        step, warmup_optimizer_steps, total_optimizer_steps, min_lr_ratio=0.1
+        step, CONFIG['warmup_steps'], total_steps, min_lr_ratio=0.1
     )
     
     # 断点续训 - 自动检测检查点文件

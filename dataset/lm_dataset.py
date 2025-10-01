@@ -20,28 +20,28 @@ def dynamic_collate_fn(batch):
     
     🔧 标准化：使用Hugging Face标准的-100填充labels
     """
-    X_list, Y_list, loss_mask_list = zip(*batch)
+    input_ids_list, labels_list, loss_mask_list = zip(*batch)
     
     # 找到批次内的最大长度
-    max_len = max(x.size(0) for x in X_list)
+    max_len = max(x.size(0) for x in input_ids_list)
     
     # 动态填充到批次内最大长度
-    batch_size = len(X_list)
-    device = X_list[0].device if X_list[0].is_cuda else torch.device('cpu')
+    batch_size = len(input_ids_list)
+    device = input_ids_list[0].device if input_ids_list[0].is_cuda else torch.device('cpu')
     
-    # 初始化填充后的张量
-    X_padded = torch.zeros(batch_size, max_len, dtype=torch.long, device=device)
-    Y_padded = torch.full((batch_size, max_len), -100, dtype=torch.long, device=device)  # 🔧 填充-100
+    # 初始化填充后的张量 - 使用pad_token_id填充input_ids
+    input_ids_padded = torch.zeros(batch_size, max_len, dtype=torch.long, device=device)
+    labels_padded = torch.full((batch_size, max_len), -100, dtype=torch.long, device=device)  # 🔧 填充-100
     loss_mask_padded = torch.zeros(batch_size, max_len, dtype=torch.long, device=device)
     
     # 填充数据
-    for i, (x, y, mask) in enumerate(zip(X_list, Y_list, loss_mask_list)):
-        seq_len = x.size(0)
-        X_padded[i, :seq_len] = x
-        Y_padded[i, :seq_len] = y
+    for i, (input_ids, labels, mask) in enumerate(zip(input_ids_list, labels_list, loss_mask_list)):
+        seq_len = input_ids.size(0)
+        input_ids_padded[i, :seq_len] = input_ids
+        labels_padded[i, :seq_len] = labels
         loss_mask_padded[i, :seq_len] = mask
     
-    return X_padded, Y_padded, loss_mask_padded
+    return input_ids_padded, labels_padded, loss_mask_padded
 
 
 class PretrainDataset(Dataset):
@@ -86,14 +86,11 @@ class PretrainDataset(Dataset):
             input_ids = encoding.input_ids.squeeze()
             loss_mask = (input_ids != self.tokenizer.pad_token_id)
 
-        X = torch.tensor(input_ids[:-1], dtype=torch.long)
-        Y = torch.tensor(input_ids[1:], dtype=torch.long)
+        # 🔧 标准化：不在数据集中移位，让模型自动处理
+        # 将pad token位置设为-100（Hugging Face标准）
+        labels = torch.where(input_ids == self.tokenizer.pad_token_id, -100, input_ids)
         
-        # 🔧 标准化：将pad token位置的labels设为-100（Hugging Face标准）
-        Y = torch.where(Y == self.tokenizer.pad_token_id, -100, Y)
-        
-        loss_mask = torch.tensor(loss_mask[1:], dtype=torch.long)
-        return X, Y, loss_mask
+        return input_ids, labels, loss_mask
 
 
 class SFTDataset(Dataset):
@@ -157,16 +154,12 @@ class SFTDataset(Dataset):
         # 生成动态损失掩码
         loss_mask = self._generate_loss_mask(input_ids)
 
-        # 构建训练数据
-        X = torch.tensor(input_ids[:-1], dtype=torch.long)
-        Y = torch.tensor(input_ids[1:], dtype=torch.long)
-        
-        # 🔧 标准化：将pad token位置的labels设为-100（Hugging Face标准）
-        Y = torch.where(Y == self.tokenizer.pad_token_id, -100, Y)
-        
-        loss_mask = torch.tensor(loss_mask[1:], dtype=torch.long)  # 对齐预测位置
+        # 🔧 标准化：不在数据集中移位，让模型自动处理
+        input_ids = torch.tensor(input_ids, dtype=torch.long)
+        labels = torch.where(input_ids == self.tokenizer.pad_token_id, -100, input_ids)
+        loss_mask = torch.tensor(loss_mask, dtype=torch.long)
 
-        return X, Y, loss_mask
+        return input_ids, labels, loss_mask
 
 
 class DPODataset(Dataset):
@@ -211,12 +204,13 @@ class DPODataset(Dataset):
 
         rejected_input_ids = rejected_encoding['input_ids']
         rejected_loss_mask = self._generate_loss_mask(rejected_input_ids)
-        x_chosen = torch.tensor(chosen_input_ids[:-1], dtype=torch.long)
-        y_chosen = torch.tensor(chosen_input_ids[1:], dtype=torch.long)
-        mask_chosen = torch.tensor(chosen_loss_mask[1:], dtype=torch.long)
-        x_rejected = torch.tensor(rejected_input_ids[:-1], dtype=torch.long)
-        y_rejected = torch.tensor(rejected_input_ids[1:], dtype=torch.long)
-        mask_rejected = torch.tensor(rejected_loss_mask[1:], dtype=torch.long)
+        # 🔧 标准化：不在数据集中移位，让模型自动处理
+        x_chosen = torch.tensor(chosen_input_ids, dtype=torch.long)
+        y_chosen = torch.where(torch.tensor(chosen_input_ids) == self.padding, -100, torch.tensor(chosen_input_ids))
+        mask_chosen = torch.tensor(chosen_loss_mask, dtype=torch.long)
+        x_rejected = torch.tensor(rejected_input_ids, dtype=torch.long)
+        y_rejected = torch.where(torch.tensor(rejected_input_ids) == self.padding, -100, torch.tensor(rejected_input_ids))
+        mask_rejected = torch.tensor(rejected_loss_mask, dtype=torch.long)
 
         return {
             'x_chosen': x_chosen,

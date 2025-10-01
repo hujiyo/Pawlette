@@ -11,15 +11,25 @@ warnings.filterwarnings('ignore')
 
 
 def apply_chat_template_simple(messages: List[Dict[str, str]], add_generation_prompt: bool = True) -> str:
-    """简易对话模板拼接，避免依赖具体模型模板。"""
+    """使用与tokenizer_config.json一致的对话模板。"""
     prompt = ""
+    
+    # 处理系统消息（如果有）
+    if messages and messages[0]["role"] == "system":
+        prompt += f"[SYS]{messages[0]['content']}[/SYS]\n"
+        messages = messages[1:]
+    
+    # 处理对话历史
     for msg in messages:
         if msg["role"] == "user":
-            prompt += f"[INST] {msg['content']} [/INST]"
+            prompt += f"[OTHER]user[SEP]{msg['content']}[/OTHER]\n"
         elif msg["role"] == "assistant":
-            prompt += f" {msg['content']} </s>"
-    if add_generation_prompt:
-        prompt += " "
+            prompt += f"[AI]{msg['content']}[/AI]\n"
+    
+    # 添加生成提示符
+    if add_generation_prompt and messages and messages[-1]["role"] == "user":
+        prompt += "[AI]"
+    
     return prompt
 
 def _resize_embeddings_if_needed(model: PawletteModelLLM, tokenizer):
@@ -30,21 +40,28 @@ def _resize_embeddings_if_needed(model: PawletteModelLLM, tokenizer):
         if vocab_size <= current_vocab:
             return
         old_emb = model.model.embed_tokens.weight.data
-        old_out = model.lm_head.weight.data
         hidden = old_emb.size(1)
         num_new = vocab_size - current_vocab
         mean = old_emb.mean().item()
         std = old_emb.std().item()
         new_emb_rows = mean + std * 0.02 * torch.randn(num_new, hidden, device=old_emb.device, dtype=old_emb.dtype)
-        new_out_rows = mean + std * 0.02 * torch.randn(num_new, hidden, device=old_out.device, dtype=old_out.dtype)
+        
         # 扩展嵌入
         new_emb = torch.cat([old_emb, new_emb_rows], dim=0)
         model.model.embed_tokens = torch.nn.Embedding.from_pretrained(new_emb, freeze=False)
-        # 扩展输出头
-        new_lm = torch.nn.Linear(hidden, vocab_size, bias=False)
-        new_lm.weight.data[:old_out.size(0)] = old_out
-        new_lm.weight.data[old_out.size(0):] = new_out_rows
-        model.lm_head = new_lm
+        
+        # 扩展输出头（考虑参数共享）
+        if model.config.tie_word_embeddings:
+            # 如果启用参数共享，直接将lm_head权重指向embed_tokens权重
+            model.lm_head.weight = model.model.embed_tokens.weight
+        else:
+            # 如果不共享参数，单独扩展lm_head
+            old_out = model.lm_head.weight.data
+            new_out_rows = mean + std * 0.02 * torch.randn(num_new, hidden, device=old_out.device, dtype=old_out.dtype)
+            new_lm = torch.nn.Linear(hidden, vocab_size, bias=False)
+            new_lm.weight.data[:old_out.size(0)] = old_out
+            new_lm.weight.data[old_out.size(0):] = new_out_rows
+            model.lm_head = new_lm
 
 
 def init_model(args):
@@ -65,10 +82,14 @@ def init_model(args):
         _resize_embeddings_if_needed(model, tokenizer)
         
         # 将tokenizer的特殊token对齐到模型config（避免警告）
-        # 注意：这里以model.config为准，因为它已经正确设置了不同的pad_token_id
         tokenizer.pad_token_id = model.config.pad_token_id
         tokenizer.eos_token_id = model.config.eos_token_id
         tokenizer.bos_token_id = model.config.bos_token_id
+        
+        # 预训练模式：禁用自动添加特殊token
+        if args.model_mode == 0:
+            tokenizer.add_bos_token = False
+            tokenizer.add_eos_token = False
         
         model = model.to(args.device)
     else:
@@ -185,8 +206,13 @@ def main():
         # 根据模型模式选择提示格式
         new_prompt = apply_chat_template_simple(messages, add_generation_prompt=True) if args.model_mode != 0 else prompt
 
-        # 编码输入
-        input_ids = tokenizer.encode(new_prompt, add_special_tokens=True)
+        # 编码输入（预训练模式不添加特殊token）
+        if args.model_mode == 0:
+            # 预训练模式：完全不添加任何特殊token
+            input_ids = tokenizer.encode(new_prompt, add_special_tokens=False)
+        else:
+            # 指令微调模式：添加特殊token
+            input_ids = tokenizer.encode(new_prompt, add_special_tokens=True)
         inputs = torch.tensor([input_ids], device=args.device)
 
         print('🤖️: ', end='', flush=True)

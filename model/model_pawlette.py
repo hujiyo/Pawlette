@@ -279,13 +279,15 @@ class PawletteModelLLM(PreTrainedModel, GenerationMixin):
         output_hidden_states = output_hidden_states if output_hidden_states is not None else False
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
         
+        batch_size, seq_len = input_ids.shape
+        
         # 初始化InferenceParams（如果未提供）
         if inference_params is None:
-            batch_size, seq_len = input_ids.shape
+            # 第一次调用：创建新的InferenceParams
             inference_params = InferenceParams(
-                max_seqlen=seq_len,
+                max_seqlen=8192,  # 最大序列长度
                 max_batch_size=batch_size,
-                seqlen_offset=0,
+                seqlen_offset=0,  # 从0开始
                 batch_size_offset=0,
                 key_value_memory_dict={},
                 lengths_per_sample=None,
@@ -302,6 +304,11 @@ class PawletteModelLLM(PreTrainedModel, GenerationMixin):
         )
         
         hidden_states = outputs["last_hidden_state"]
+        
+        # 更新seqlen_offset（在处理完输入后）
+        # 这样下次调用时Mamba知道已经处理了多少tokens
+        if inference_params is not None and use_cache:
+            inference_params.seqlen_offset += seq_len
         
         # 计算logits
         logits = self.lm_head(hidden_states)
@@ -340,16 +347,19 @@ class PawletteModelLLM(PreTrainedModel, GenerationMixin):
         **kwargs
     ):
         """为生成准备输入"""
-        # 将transformers的DynamicCache转换为InferenceParams
+        # Mamba使用InferenceParams管理状态，需要特殊处理
         inference_params = None
+        
         if past_key_values is not None:
             # 检查是否是InferenceParams
             if isinstance(past_key_values, InferenceParams):
                 inference_params = past_key_values
-                input_ids = input_ids[:, -1:]  # 只需要最后一个token
+                # 只保留最后一个token（因为之前的token已经处理过了）
+                input_ids = input_ids[:, -1:]
+                # 注意：不要在这里更新seqlen_offset，它会在forward中更新
             else:
-                # 如果是其他类型的cache（如DynamicCache），忽略并重新初始化
-                # 这会导致性能下降，但能保证兼容性
+                # 如果是其他类型的cache（如DynamicCache），忽略
+                # 这会导致每次都重新初始化状态，影响性能但保证兼容性
                 inference_params = None
         
         model_inputs = {
