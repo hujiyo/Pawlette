@@ -249,7 +249,7 @@ def init_model():
     Logger(f"   - vocab_size: {config.vocab_size}")
     
     # 创建模型
-    model = PawletteModelLLM()
+    model = PawletteModelLLM(config)
     
     # 加载预训练权重（如果指定）
     if CONFIG['continue_pretrain'] and CONFIG['pretrained_path']:
@@ -262,7 +262,9 @@ def init_model():
             Logger(f"⚠️ 预训练模型文件不存在: {CONFIG['pretrained_path']}")
     
     # 加载分词器（官方AutoTokenizer）
-    tokenizer = AutoTokenizer.from_pretrained('./model/', use_fast=True)
+    # 将相对路径转换为绝对路径
+    tokenizer_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'model'))
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=True)
     config.pad_token_id = tokenizer.pad_token_id
     config.bos_token_id = tokenizer.bos_token_id
     config.eos_token_id = tokenizer.eos_token_id

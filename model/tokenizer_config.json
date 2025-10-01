@@ -4,7 +4,7 @@
   "add_prefix_space": false,
   "added_tokens_decoder": {
     "0": {
-      "content": "[END]",
+      "content": "[AI]",
       "lstrip": false,
       "normalized": false,
       "rstrip": false,
@@ -12,7 +12,7 @@
       "special": true
     },
     "1": {
-      "content": "[SYS]",
+      "content": "[/AI]",
       "lstrip": false,
       "normalized": false,
       "rstrip": false,
@@ -20,7 +20,167 @@
       "special": true
     },
     "2": {
+      "content": "[OTHER]",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "3": {
+      "content": "[/OTHER]",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "4": {
+      "content": "[SYS]",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "5": {
+      "content": "[/SYS]",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "6": {
       "content": "[SEP]",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "7": {
+      "content": "[RET]",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "8": {
+      "content": "[/RET]",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "9": {
+      "content": "[IMG]",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "10": {
+      "content": "[/IMG]",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "11": {
+      "content": "<ed>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "12": {
+      "content": "<tk>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "13": {
+      "content": "</tk>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "14": {
+      "content": "<lb>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "15": {
+      "content": "</lb>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "16": {
+      "content": "<to>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "17": {
+      "content": "</to>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "18": {
+      "content": "special_token_1",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "19": {
+      "content": "special_token_2",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "20": {
+      "content": "special_token_3",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "21": {
+      "content": "special_token_4",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "22": {
+      "content": "special_token_5",
       "lstrip": false,
       "normalized": false,
       "rstrip": false,
@@ -29,15 +189,15 @@
     }
   },
   "additional_special_tokens": [],
-  "bos_token": "[SYS]",
+  "bos_token": null,
   "clean_up_tokenization_spaces": false,
-  "eos_token": "[END]",
+  "eos_token": "<ed>",
   "legacy": true,
   "model_max_length": 32768,
-  "pad_token": "[END]",
+  "pad_token": "<ed>",
   "sp_model_kwargs": {},
   "spaces_between_special_tokens": false,
   "tokenizer_class": "PreTrainedTokenizerFast",
-  "unk_token": "[SEP]",
-  "chat_template": "{% if messages[0]['role'] == 'system' %}{% set system_message = messages[0]['content'] %}{{ '[SYS]system\\n' + system_message + '[END]\\n' }}{% else %}{{ '[SYS]system\\nYou are a helpful assistant[END]\\n' }}{% endif %}{% for message in messages %}{% set content = message['content'] %}{% if message['role'] == 'user' %}{{ '[SYS]user\\n' + content + '[END]\\n[SYS]assistant\\n' }}{% elif message['role'] == 'assistant' %}{{ content + '[SYS]' + '\\n' }}{% endif %}{% endfor %}"
+  "unk_token": null,
+  "chat_template": "{% if messages[0]['role'] == 'system' %}{% set system_message = messages[0]['content'] %}{{ '[SYS]' + system_message + '[/SYS]\\n' }}{% endif %}{% for message in messages %}{% set content = message['content'] %}{% if message['role'] == 'user' %}{{ '[OTHER]user[SEP]' + content + '[/OTHER]\\n' }}{% elif message['role'] == 'assistant' %}{{ '[AI]' + content + '[/AI]\\n' }}{% endif %}{% endfor %}{% if messages[-1]['role'] == 'user' %}{{ '[AI]' }}{% endif %}"
 }

@@ -11,7 +11,7 @@ class PawletteConfig(PretrainedConfig):
     model_type = "pawlette"
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
-        self.vocab_size = 6400    # 词汇表大小
+        self.vocab_size = 6420    # 词汇表大小
         self.hidden_size = 672    # 隐藏层大小
         self.state_size = 128    # SSM状态大小
         self.conv_size = 4    # 卷积宽度
@@ -45,9 +45,9 @@ class PawletteConfig(PretrainedConfig):
         self.use_mem_eff_path = True    # 是否使用内存高效路径 (启用以优化内存)
         
         # 特殊token
-        self.bos_token_id = 1   # [SYS]   # 开始token
-        self.eos_token_id = 0   # [END]
-        self.pad_token_id = 2   # [SEP] - 使用不同的token避免与eos混淆
+        self.bos_token_id = 0   # [AI]
+        self.eos_token_id = 11  # <ed>
+        self.pad_token_id = 6   # [SEP]
         
         # 其他默认参数[禁止修改]
         self.use_cache = True   # 是否使用缓存
