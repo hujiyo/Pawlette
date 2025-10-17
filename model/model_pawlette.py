@@ -5,6 +5,7 @@ from transformers import PretrainedConfig, PreTrainedModel, GenerationMixin
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from mamba_ssm import Mamba2
 from mamba_ssm.utils.generation import InferenceParams
+from .transformer_block import TransformerBlock, RMSNorm
 
 class PawletteConfig(PretrainedConfig):
     """Pawlette模型配置类"""
@@ -12,13 +13,13 @@ class PawletteConfig(PretrainedConfig):
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
         self.vocab_size = 6420    # 词汇表大小
-        self.hidden_size = 672    # 隐藏层大小
-        self.state_size = 128    # SSM状态大小
+        self.hidden_size = 640    # 隐藏层大小
+        self.state_size = 256    # SSM状态大小
         self.conv_size = 4    # 卷积宽度
         self.expand_factor = 2    # 块扩展因子
         self.intermediate_size = self.expand_factor * self.hidden_size    # 中间层大小
         
-        self.num_hidden_layers = 8    # 隐藏层数量
+        self.num_hidden_layers = 16    # 隐藏层数量
         self.rms_norm_eps = 1e-5    # RMSNorm的epsilon
         self.use_bias = False    # 是否使用偏置
         self.use_conv_bias = True    # 是否使用卷积偏置
@@ -38,10 +39,10 @@ class PawletteConfig(PretrainedConfig):
         self.norm_before_gate = False    # 门控前是否归一化
         
         # 分块和头参数
-        self.headdim = 56   # 每个头的维度
+        self.headdim = 64   # 每个头的维度
         self.ngroups = 1    # SSM参数的组数
-        self.d_ssm = None    # SSM状态大小，如果为None则使用d_inner
-        self.chunk_size = 32    # 块大小用于分块处理 (优化内存使用)
+        self.d_ssm = self.state_size    # SSM状态大小，与state_size保持一致
+        self.chunk_size = 64    # 块大小用于分块处理 (优化内存使用)
         self.use_mem_eff_path = True    # 是否使用内存高效路径 (启用以优化内存)
         
         # 特殊token
@@ -53,31 +54,32 @@ class PawletteConfig(PretrainedConfig):
         self.use_cache = True   # 是否使用缓存
         self.tie_word_embeddings = False   # 是否共享词嵌入权重
 
-class RMSNorm(nn.Module):
-    """RMSNorm归一化层"""
-    def __init__(self, dim: int, eps: float = 1e-5):
-        super().__init__()
-        self.eps = eps
-        self.weight = nn.Parameter(torch.ones(dim))
-    
-    def forward(self, x):
-        # 计算RMS
-        variance = x.pow(2).mean(-1, keepdim=True)
-        x = x * torch.rsqrt(variance + self.eps)
-        return self.weight * x
+        # Transformer层配置
+        self.transformer_layers = [5, 10, 14]  # 使用Transformer的层索引（从0开始）
+        self.transformer_num_heads = 10
+        self.transformer_dropout = 0.0
+        self.transformer_attn_dropout = 0.0
+        self.transformer_intermediate_size = int(4 * self.hidden_size)  # 扩展因子3.5: 640 → 2240
 
 class MambaBlock(nn.Module):
     """Pawlette Mamba2 块"""
+
     def __init__(self, config: PawletteConfig, layer_idx: int):
         super().__init__()
         self.config = config
-        self.layer_idx = layer_idx # 层索引
+        self.layer_idx = layer_idx
 
-        # 输入归一化
-        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        if layer_idx < 4:
+            d_state = 64
+        elif layer_idx < 12:
+            d_state = 128
+        else:
+            d_state = config.state_size
+
+        self.mamba_norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.mamba = Mamba2(
             d_model=config.hidden_size,
-            d_state=config.state_size,
+            d_state=d_state,
             d_conv=config.conv_size,
             expand=config.expand_factor,
             headdim=config.headdim,
@@ -96,33 +98,21 @@ class MambaBlock(nn.Module):
             use_mem_eff_path=config.use_mem_eff_path,
             layer_idx=self.layer_idx,
         )
-        
-    def forward(self,hidden_states: torch.Tensor,
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
         inference_params: Optional[InferenceParams] = None,
-        **kwargs # 忽略其他参数，保持兼容性
+        attention_mask: Optional[torch.Tensor] = None,
+        **kwargs,
     ) -> torch.Tensor:
-        """
-        前向传播
-        
-        Args:
-            hidden_states: [batch_size, seq_len, hidden_size]
-            inference_params: Mamba2推理参数
-            
-        Returns:
-            output: [batch_size, seq_len, hidden_size]
-        """
-        residual = hidden_states # 残差连接
-        hidden_states = self.norm(hidden_states)
-        
-        # Mamba2处理 - 使用正确的推理参数
+        residual = hidden_states
+        hidden_states = self.mamba_norm(hidden_states)
         if inference_params is not None:
-            # 推理模式with cache
-            hidden_states = self.mamba(hidden_states,inference_params=inference_params)
+            hidden_states = self.mamba(hidden_states, inference_params=inference_params)
         else:
-            # 训练模式
             hidden_states = self.mamba(hidden_states)
-               
-        hidden_states = residual + hidden_states # 残差连接
+        hidden_states = residual + hidden_states
         return hidden_states
 
 
@@ -134,10 +124,12 @@ class PawletteModelCore(nn.Module):
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size) # Token嵌入层
         
         
-        self.layers = nn.ModuleList([
-            MambaBlock(config, layer_idx=i)            
-            for i in range(config.num_hidden_layers)
-        ])# Mamba2层堆叠
+        self.layers = nn.ModuleList()
+        for i in range(config.num_hidden_layers):
+            if i in self.config.transformer_layers:
+                self.layers.append(TransformerBlock(self.config, layer_idx=i))
+            else:
+                self.layers.append(MambaBlock(self.config, layer_idx=i))
         
         # 最终归一化层
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)        
@@ -159,6 +151,7 @@ class PawletteModelCore(nn.Module):
         input_ids: torch.LongTensor,
         attention_mask: Optional[torch.Tensor] = None,
         inference_params: Optional[InferenceParams] = None,
+        transformer_kv_caches: Optional[dict] = None,
         use_cache: bool = False,
         output_hidden_states: bool = False,
         return_dict: bool = True,
@@ -169,8 +162,9 @@ class PawletteModelCore(nn.Module):
         
         Args:
             input_ids: 输入token ids [batch_size, seq_len]
-            attention_mask: 注意力掩码（Mamba2中主要用于兼容性，实际处理由InferenceParams管理）
+            attention_mask: 注意力掩码
             inference_params: Mamba2推理参数
+            transformer_kv_caches: Transformer层的KV缓存字典 {layer_idx: (key, value)}
             use_cache: 是否使用缓存
             output_hidden_states: 是否输出所有层的隐藏状态
             return_dict: 是否返回字典
@@ -182,35 +176,50 @@ class PawletteModelCore(nn.Module):
         
         # 初始化InferenceParams（如果未提供）
         if inference_params is None and use_cache:
-            # 为推理模式创建InferenceParams
             inference_params = InferenceParams(
                 max_seqlen=seq_len,
                 max_batch_size=batch_size,
                 seqlen_offset=0,
                 batch_size_offset=0,
                 key_value_memory_dict={},
-                lengths_per_sample=None,  # 训练时通常为None
+                lengths_per_sample=None,
             )
+        
+        # 初始化Transformer KV缓存
+        if transformer_kv_caches is None:
+            transformer_kv_caches = {}
+        new_transformer_kv_caches = {}
         
         # Token嵌入
         hidden_states = self.embed_tokens(input_ids)
         
-        # Mamba2不需要在嵌入层处理attention_mask
-        # Mamba2通过InferenceParams.lengths_per_sample和use_mem_eff_path自动处理变长序列
-        # 在嵌入层做mask会破坏状态空间模型的递归状态传播
-        
         # 存储所有层的隐藏状态（如果需要）
         all_hidden_states = [] if output_hidden_states else None
         
-        # 通过所有Mamba2层
-        for layer in self.layers:
+        # 通过所有层
+        for layer_idx, layer in enumerate(self.layers):
             if output_hidden_states:
                 all_hidden_states.append(hidden_states)
-                
-            hidden_states = layer(
-                hidden_states,
-                inference_params=inference_params
-            )
+            
+            if layer_idx in self.config.transformer_layers:
+                # Transformer层：需要传递KV缓存和attention_mask
+                past_kv = transformer_kv_caches.get(layer_idx, None)
+                hidden_states, present_kv = layer(
+                    hidden_states,
+                    inference_params=inference_params,
+                    attention_mask=attention_mask,
+                    transformer_kv_cache=past_kv,
+                    use_cache=use_cache,
+                )
+                if use_cache:
+                    new_transformer_kv_caches[layer_idx] = present_kv
+            else:
+                # Mamba层：只需要inference_params
+                hidden_states = layer(
+                    hidden_states,
+                    inference_params=inference_params,
+                    attention_mask=None,
+                )
         
         # 最终归一化
         hidden_states = self.norm(hidden_states)
@@ -222,10 +231,11 @@ class PawletteModelCore(nn.Module):
             return {
                 "last_hidden_state": hidden_states,
                 "hidden_states": all_hidden_states,
-                "inference_params": inference_params if use_cache else None
+                "inference_params": inference_params if use_cache else None,
+                "transformer_kv_caches": new_transformer_kv_caches if use_cache else None,
             }
         
-        return hidden_states, all_hidden_states, inference_params
+        return hidden_states, all_hidden_states, inference_params, new_transformer_kv_caches
 
 
 class PawletteModelLLM(PreTrainedModel, GenerationMixin):
@@ -279,11 +289,17 @@ class PawletteModelLLM(PreTrainedModel, GenerationMixin):
         output_hidden_states = output_hidden_states if output_hidden_states is not None else False
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
         
+        # 训练模式下强制禁用cache，避免KV缓存累积导致OOM
+        if use_cache is None:
+            use_cache = self.config.use_cache
+        if self.training:
+            use_cache = False
+        
         batch_size, seq_len = input_ids.shape
         
         # 初始化InferenceParams（如果未提供）
-        if inference_params is None:
-            # 第一次调用：创建新的InferenceParams
+        if inference_params is None and use_cache:
+            # 只在需要缓存时才创建
             inference_params = InferenceParams(
                 max_seqlen=8192,  # 最大序列长度
                 max_batch_size=batch_size,
@@ -293,12 +309,16 @@ class PawletteModelLLM(PreTrainedModel, GenerationMixin):
                 lengths_per_sample=None,
             )
         
+        # 从kwargs中提取transformer_kv_caches（如果有）
+        transformer_kv_caches = kwargs.get('transformer_kv_caches', None)
+        
         # 获取模型输出
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             inference_params=inference_params,
-            use_cache=self.config.use_cache,
+            transformer_kv_caches=transformer_kv_caches,
+            use_cache=use_cache,  # 使用处理后的use_cache参数
             output_hidden_states=output_hidden_states,
             return_dict=True
         )
@@ -331,10 +351,16 @@ class PawletteModelLLM(PreTrainedModel, GenerationMixin):
             output = (logits,) + outputs[1:]
             return ((loss,) + output) if loss is not None else output
         
+        # 将两种缓存打包在一起
+        past_key_values = {
+            'inference_params': outputs.get("inference_params"),
+            'transformer_kv_caches': outputs.get("transformer_kv_caches"),
+        }
+        
         return CausalLMOutputWithPast(
             loss=loss,
             logits=logits,
-            past_key_values=outputs.get("inference_params"),
+            past_key_values=past_key_values,
             hidden_states=outputs.get("hidden_states"),
             attentions=None  # Mamba没有注意力权重
         )
@@ -347,24 +373,25 @@ class PawletteModelLLM(PreTrainedModel, GenerationMixin):
         **kwargs
     ):
         """为生成准备输入"""
-        # Mamba使用InferenceParams管理状态，需要特殊处理
         inference_params = None
+        transformer_kv_caches = None
         
         if past_key_values is not None:
-            # 检查是否是InferenceParams
-            if isinstance(past_key_values, InferenceParams):
-                inference_params = past_key_values
+            # 检查是否是我们的混合缓存字典
+            if isinstance(past_key_values, dict):
+                inference_params = past_key_values.get('inference_params', None)
+                transformer_kv_caches = past_key_values.get('transformer_kv_caches', None)
                 # 只保留最后一个token（因为之前的token已经处理过了）
                 input_ids = input_ids[:, -1:]
-                # 注意：不要在这里更新seqlen_offset，它会在forward中更新
-            else:
-                # 如果是其他类型的cache（如DynamicCache），忽略
-                # 这会导致每次都重新初始化状态，影响性能但保证兼容性
-                inference_params = None
+            elif isinstance(past_key_values, InferenceParams):
+                # 向后兼容：如果直接传InferenceParams
+                inference_params = past_key_values
+                input_ids = input_ids[:, -1:]
         
         model_inputs = {
             "input_ids": input_ids,
             "inference_params": inference_params,
+            "transformer_kv_caches": transformer_kv_caches,
             "use_cache": kwargs.get("use_cache", True),
             "attention_mask": attention_mask,
         }        
@@ -372,13 +399,45 @@ class PawletteModelLLM(PreTrainedModel, GenerationMixin):
     
     @staticmethod
     def _reorder_cache(past_key_values, beam_idx):
-        """重排序缓存用于beam search - Mamba2特定实现"""
+        """重排序缓存用于beam search"""
         if past_key_values is None:
             return None
+        
+        # 处理混合缓存字典
+        if isinstance(past_key_values, dict) and 'inference_params' in past_key_values:
+            reordered_cache = {}
             
-        # Mamba2的cache重排序逻辑
-        if isinstance(past_key_values, InferenceParams):
-            # 对于InferenceParams，需要重排序其内部状态
+            # 重排序Mamba的InferenceParams
+            inference_params = past_key_values.get('inference_params')
+            if inference_params is not None:
+                reordered_params = InferenceParams(
+                    max_seqlen=inference_params.max_seqlen,
+                    max_batch_size=inference_params.max_batch_size,
+                    seqlen_offset=inference_params.seqlen_offset,
+                    batch_size_offset=inference_params.batch_size_offset,
+                    key_value_memory_dict=inference_params.key_value_memory_dict,
+                    lengths_per_sample=inference_params.lengths_per_sample,
+                )
+                for key, value in reordered_params.key_value_memory_dict.items():
+                    if isinstance(value, torch.Tensor) and value.dim() > 0:
+                        reordered_params.key_value_memory_dict[key] = value.index_select(0, beam_idx.to(value.device))
+                reordered_cache['inference_params'] = reordered_params
+            
+            # 重排序Transformer的KV缓存
+            transformer_kv_caches = past_key_values.get('transformer_kv_caches')
+            if transformer_kv_caches is not None:
+                reordered_transformer_kv = {}
+                for layer_idx, (key, value) in transformer_kv_caches.items():
+                    reordered_transformer_kv[layer_idx] = (
+                        key.index_select(0, beam_idx.to(key.device)),
+                        value.index_select(0, beam_idx.to(value.device))
+                    )
+                reordered_cache['transformer_kv_caches'] = reordered_transformer_kv
+            
+            return reordered_cache
+        
+        # 向后兼容：直接是InferenceParams
+        elif isinstance(past_key_values, InferenceParams):
             reordered_params = InferenceParams(
                 max_seqlen=past_key_values.max_seqlen,
                 max_batch_size=past_key_values.max_batch_size,
@@ -387,22 +446,12 @@ class PawletteModelLLM(PreTrainedModel, GenerationMixin):
                 key_value_memory_dict=past_key_values.key_value_memory_dict,
                 lengths_per_sample=past_key_values.lengths_per_sample,
             )
-            
-            # 重排序key_value_memory_dict中的张量
             for key, value in reordered_params.key_value_memory_dict.items():
                 if isinstance(value, torch.Tensor) and value.dim() > 0:
                     reordered_params.key_value_memory_dict[key] = value.index_select(0, beam_idx.to(value.device))
-            
             return reordered_params
-        else:
-            # 兼容其他类型的cache
-            reordered_past = {}
-            for key, value in past_key_values.items():
-                if isinstance(value, torch.Tensor):
-                    reordered_past[key] = value.index_select(0, beam_idx.to(value.device))
-                else:
-                    reordered_past[key] = value
-            return reordered_past
+        
+        return past_key_values
 
 def count_parameters(model):
     """统计模型参数量"""

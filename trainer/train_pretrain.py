@@ -11,7 +11,6 @@ import torch.distributed as dist
 from torch import optim, nn
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler
-from contextlib import nullcontext
 from transformers import AutoTokenizer
 from model.model_pawlette import PawletteConfig, PawletteModelLLM, count_parameters
 from dataset.lm_dataset import PretrainDataset, dynamic_collate_fn
@@ -22,7 +21,7 @@ warnings.filterwarnings('ignore')
 CONFIG = {
     # 训练配置
     'epochs': 1,
-    'batch_size': 16,  # 减小批次大小以降低内存占用
+    'batch_size': 32,  
     'learning_rate': 5e-4,
     'warmup_steps': 100, #指预热步数
     'accumulation_steps': 8,  # 增加梯度累积步数以保持有效批次大小
@@ -50,7 +49,7 @@ CONFIG = {
     'num_workers': 4,
     
     # 其他配置
-    'device': 'cuda:0' if torch.cuda.is_available() else 'cpu',
+    'device': 'cuda:0',  # Pawlette必须使用GPU训练（Mamba2依赖CUDA）
     'seed': 42,
     'use_wandb': False,
     'wandb_project': 'Pawlette-Pretrain',
@@ -127,6 +126,7 @@ def train_epoch(epoch, start_step, model, train_loader, optimizer, scaler,
     start_time = time.time()
     first_step = True  # 标记是否是第一个实际执行的步骤
     executed_steps = 0  # 实际执行的步数计数器
+    accumulation_counter = 0  # 梯度累积计数器
     
     # 🔧 修复：正确计算全局步数的起始点
     if epoch == start_epoch:
@@ -150,17 +150,18 @@ def train_epoch(epoch, start_step, model, train_loader, optimizer, scaler,
         
         # 增加实际执行的步数计数
         executed_steps += 1
+        accumulation_counter += 1
         
         input_ids = input_ids.to(CONFIG['device'])
         labels = labels.to(CONFIG['device'])
-        loss_mask = loss_mask.to(CONFIG['device'])
+        attention_mask = (input_ids != 6).long()  # pad_token_id = 6
         
         # 🔧 修复：使用正确的全局步数
         global_step = current_global_step
         
         # 前向传播
         with ctx:
-            outputs = model(input_ids=input_ids, labels=labels)
+            outputs = model(input_ids=input_ids, labels=labels, attention_mask=attention_mask)
             
             # 🔧 标准化：使用模型自带的loss计算（模型内部会自动处理shift）
             loss = outputs.loss
@@ -172,12 +173,13 @@ def train_epoch(epoch, start_step, model, train_loader, optimizer, scaler,
         scaler.scale(loss).backward()
         
         # 更新学习率（每个batch都更新，与old版本一致）
+        # 使用实际学习率（已经根据预训练模型调整过）
         lr_mult = scheduler_fn(global_step)
         for param_group in optimizer.param_groups:
-            param_group['lr'] = CONFIG['learning_rate'] * lr_mult
+            param_group['lr'] = CONFIG['actual_learning_rate'] * lr_mult
         
-        # 梯度累积步骤
-        if (step + 1) % CONFIG['accumulation_steps'] == 0:
+        # 梯度累积步骤 - 使用独立计数器避免断点续训时错位
+        if accumulation_counter % CONFIG['accumulation_steps'] == 0:
             # 梯度裁剪
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), CONFIG['grad_clip'])
@@ -253,12 +255,14 @@ def init_model():
     model = PawletteModelLLM(config)
     
     # 加载预训练权重（如果指定）
+    loaded_pretrained = False  # 标记是否加载了预训练模型
     if CONFIG['continue_pretrain'] and CONFIG['pretrained_path']:
         if os.path.exists(CONFIG['pretrained_path']):
             Logger(f"📂 加载预训练模型: {CONFIG['pretrained_path']}")
             state_dict = torch.load(CONFIG['pretrained_path'], map_location=CONFIG['device'])
             model.load_state_dict(state_dict, strict=False)
             Logger("✅ 预训练模型加载成功")
+            loaded_pretrained = True
         else:
             Logger(f"⚠️ 预训练模型文件不存在: {CONFIG['pretrained_path']}")
     
@@ -277,7 +281,7 @@ def init_model():
     params = count_parameters(model)
     Logger(f"📊 模型参数量: {params['trainable_M']:.2f}M (可训练) / {params['total_M']:.2f}M (总计)")
     
-    return model, tokenizer, config
+    return model, tokenizer, config, loaded_pretrained
 
 
 def init_distributed_mode():
@@ -304,11 +308,25 @@ def main():
     - 目标是学习语言的统计规律和表示
     - 通过训练损失监控训练进度
     - 定期保存检查点用于断点续训
+    
+    注意：Pawlette必须使用GPU训练（Mamba2依赖CUDA）
     """
+    # 检查CUDA可用性
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "❌ Pawlette需要GPU支持！\n"
+            "Mamba2架构依赖CUDA kernel，无法在CPU上训练。\n"
+            "请确保：\n"
+            "  1. 有可用的NVIDIA GPU\n"
+            "  2. 正确安装了CUDA和PyTorch GPU版本\n"
+            "  3. 运行 'nvidia-smi' 检查GPU状态"
+        )
+    
+    Logger(f"🎮 检测到GPU: {torch.cuda.get_device_name(0)}")
+    
     # 设置随机种子
     torch.manual_seed(CONFIG['seed'])
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(CONFIG['seed'])
+    torch.cuda.manual_seed(CONFIG['seed'])
     
     # 初始化分布式训练
     if CONFIG['ddp']:
@@ -328,13 +346,12 @@ def main():
     Logger("🐾 Pawlette预训练开始")
     Logger(f"📁 输出目录: {CONFIG['save_dir']}")
     
-    # 设置设备和混合精度（固定使用bfloat16）
-    device_type = "cuda" if "cuda" in CONFIG['device'] else "cpu"
-    ctx = nullcontext() if device_type == "cpu" else torch.cuda.amp.autocast(dtype=torch.bfloat16)
+    # 设置混合精度（固定使用bfloat16）
+    ctx = torch.cuda.amp.autocast(dtype=torch.bfloat16)
     Logger(f"🔢 训练精度: bfloat16 (混合精度训练)")
     
     # 初始化模型和分词器
-    model, tokenizer, config = init_model()
+    model, tokenizer, config, loaded_pretrained = init_model()
     
     # 准备数据集
     train_dataset = PretrainDataset(CONFIG['data_path'], tokenizer, max_length=CONFIG['max_seq_len'])
@@ -358,16 +375,24 @@ def main():
     )
     
     
-    # 优化器
+    # 优化器 - 根据是否使用预训练模型调整学习率
+    actual_lr = CONFIG['learning_rate']
+    if loaded_pretrained:
+        actual_lr = CONFIG['learning_rate'] * 0.5  # 使用预训练模型时，学习率降低到50%
+        Logger(f"🔧 检测到使用预训练模型初始化，学习率调整为: {actual_lr:.2e} (原学习率的50%)")
+    
+    # 保存实际学习率到CONFIG，供学习率调度器使用
+    CONFIG['actual_learning_rate'] = actual_lr
+    
     optimizer = optim.AdamW(
         model.parameters(),
-        lr=CONFIG['learning_rate'],
+        lr=actual_lr,
         weight_decay=CONFIG['weight_decay'],
         betas=(0.9, 0.95),
     )
     
-    # 混合精度训练（bfloat16）
-    scaler = torch.cuda.amp.GradScaler(enabled=True)
+    # 混合精度训练（bfloat16 + CUDA）
+    scaler = torch.cuda.amp.GradScaler()
     
     # 学习率调度器 - 基于batch步数（与old版本一致）
     total_steps = len(train_loader) * CONFIG['epochs']
@@ -432,6 +457,13 @@ def main():
                         model.load_state_dict(state_dict, strict=False)
                         Logger(f"📂 已加载模型权重: {model_path}")
                         Logger("🆕 开始从头训练（使用已有模型作为初始化）...")
+                        
+                        # 重新调整学习率（因为此时优化器已经创建）
+                        actual_lr = CONFIG['learning_rate'] * 0.5
+                        CONFIG['actual_learning_rate'] = actual_lr
+                        for param_group in optimizer.param_groups:
+                            param_group['lr'] = actual_lr
+                        Logger(f"🔧 检测到使用预训练模型初始化，学习率调整为: {actual_lr:.2e} (原学习率的50%)")
                     elif choice == "2":
                         Logger("🛑 用户选择：终止训练")
                         Logger("💡 如需继续训练，请:")

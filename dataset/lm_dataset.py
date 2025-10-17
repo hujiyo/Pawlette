@@ -27,11 +27,11 @@ def dynamic_collate_fn(batch):
     
     # 动态填充到批次内最大长度
     batch_size = len(input_ids_list)
-    device = input_ids_list[0].device if input_ids_list[0].is_cuda else torch.device('cpu')
+    device = input_ids_list[0].device  # 数据已经在GPU上
     
-    # 初始化填充后的张量 - 使用pad_token_id填充input_ids
-    input_ids_padded = torch.zeros(batch_size, max_len, dtype=torch.long, device=device)
-    labels_padded = torch.full((batch_size, max_len), -100, dtype=torch.long, device=device)  # 🔧 填充-100
+    # 初始化填充后的张量
+    input_ids_padded = torch.full((batch_size, max_len), 6, dtype=torch.long, device=device)  # pad_token_id = 6
+    labels_padded = torch.full((batch_size, max_len), -100, dtype=torch.long, device=device)
     loss_mask_padded = torch.zeros(batch_size, max_len, dtype=torch.long, device=device)
     
     # 填充数据

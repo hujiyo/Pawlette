@@ -32,38 +32,6 @@ def apply_chat_template_simple(messages: List[Dict[str, str]], add_generation_pr
     
     return prompt
 
-def _resize_embeddings_if_needed(model: PawletteModelLLM, tokenizer):
-    """当分词器词表大于模型词表时，在推理侧安全扩展嵌入与输出头。"""
-    with torch.no_grad():
-        current_vocab = model.model.embed_tokens.num_embeddings
-        vocab_size = getattr(tokenizer, 'vocab_size', current_vocab) or current_vocab
-        if vocab_size <= current_vocab:
-            return
-        old_emb = model.model.embed_tokens.weight.data
-        hidden = old_emb.size(1)
-        num_new = vocab_size - current_vocab
-        mean = old_emb.mean().item()
-        std = old_emb.std().item()
-        new_emb_rows = mean + std * 0.02 * torch.randn(num_new, hidden, device=old_emb.device, dtype=old_emb.dtype)
-        
-        # 扩展嵌入
-        new_emb = torch.cat([old_emb, new_emb_rows], dim=0)
-        model.model.embed_tokens = torch.nn.Embedding.from_pretrained(new_emb, freeze=False)
-        
-        # 扩展输出头（考虑参数共享）
-        if model.config.tie_word_embeddings:
-            # 如果启用参数共享，直接将lm_head权重指向embed_tokens权重
-            model.lm_head.weight = model.model.embed_tokens.weight
-        else:
-            # 如果不共享参数，单独扩展lm_head
-            old_out = model.lm_head.weight.data
-            new_out_rows = mean + std * 0.02 * torch.randn(num_new, hidden, device=old_out.device, dtype=old_out.dtype)
-            new_lm = torch.nn.Linear(hidden, vocab_size, bias=False)
-            new_lm.weight.data[:old_out.size(0)] = old_out
-            new_lm.weight.data[old_out.size(0):] = new_out_rows
-            model.lm_head = new_lm
-
-
 def init_model(args):
     # 纯官方方式加载分词器
     tokenizer = AutoTokenizer.from_pretrained('./model/', use_fast=True)
@@ -77,9 +45,7 @@ def init_model(args):
             ckp = f'./{args.out_dir}/{modes[args.model_mode]}_{config.hidden_size}.pth'
 
         model = PawletteModelLLM(config)
-        model.load_state_dict(torch.load(ckp, map_location='cpu'), strict=False)
-        # 推理侧对齐词表大小（如分词器更大）
-        _resize_embeddings_if_needed(model, tokenizer)
+        model.load_state_dict(torch.load(ckp, map_location=args.device), strict=False)
         
         # 将tokenizer的特殊token对齐到模型config（避免警告）
         tokenizer.pad_token_id = model.config.pad_token_id
@@ -158,7 +124,7 @@ def main():
     parser.add_argument('--out_dir', default='out', type=str)
     parser.add_argument('--temperature', default=0.85, type=float)
     parser.add_argument('--top_p', default=0.85, type=float)
-    parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu', type=str)
+    parser.add_argument('--device', default='cuda', type=str, help='Pawlette需要CUDA支持（Mamba2依赖）')
     parser.add_argument('--max_seq_len', default=8192, type=int)
     parser.add_argument('--history_cnt', default=0, type=int)
     parser.add_argument('--load', default=0, type=int, help="0: 原生torch权重，1: transformers加载")

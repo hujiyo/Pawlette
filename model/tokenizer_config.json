@@ -194,7 +194,7 @@
   "eos_token": "<ed>",
   "legacy": true,
   "model_max_length": 32768,
-  "pad_token": "<ed>",
+  "pad_token": "[SEP]",
   "sp_model_kwargs": {},
   "spaces_between_special_tokens": false,
   "tokenizer_class": "PreTrainedTokenizerFast",
