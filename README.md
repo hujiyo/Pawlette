@@ -85,26 +85,26 @@ Pawlette结构化对话协议（设计草案）
 2. calculate(expression: str) -> float: 数学计算工具
 3. get_weather(city: str) -> dict: 获取天气信息[/SYS]
 [OTHER]002[SEP]小明[SEP]你好！能帮我查一下北京今天的天气吗？顺便帮我算一下25*36等于多少[/OTHER]
-[ASST]003[SEP]<tk>用户问了两个问题：1.查询北京天气 2.计算25*36，我需要调用两个工具</tk>好的，让我帮你查询一下！<to>get_weather(city="北京")</to><to>calculate(expression="25*36")</to>[/ASST]
+[AI]003[SEP]<tk>用户问了两个问题：1.查询北京天气 2.计算25*36，我需要调用两个工具</tk>好的，让我帮你查询一下！<to>get_weather(city="北京")</to><to>calculate(expression="25*36")</to>[/AI]
 
 [RET]004[SEP]get_weather结果: {"city": "北京", "temp": 15, "condition": "晴"}
 calculate结果: 900[/RET]
 
-[ASST]005[SEP]<tk>工具返回了结果，现在组织回复</tk>北京今天天气晴朗，温度15度～很适合出门呢！另外25×36=900哦<ed>[/ASST]
+[AI]005[SEP]<tk>工具返回了结果，现在组织回复</tk>北京今天天气晴朗，温度15度～很适合出门呢！另外25×36=900哦<ed>[/AI]
 
 [OTHER]006[SEP]小红[SEP]我也想知道上海的天气[/OTHER]
 
-[ASST]007[SEP]<tk>小红想查上海天气</tk>让我帮你查一下～<to>get_weather(city="上海")</to>[/ASST]
+[AI]007[SEP]<tk>小红想查上海天气</tk>让我帮你查一下～<to>get_weather(city="上海")</to>[/AI]
 
 [RET]008[SEP]get_weather结果: {"city": "上海", "temp": 18, "condition": "多云"}[/RET]
 
-[ASST]009[SEP]上海今天多云，温度18度，比北京稍微暖和一点呢<ed>[/ASST]
+[AI]009[SEP]上海今天多云，温度18度，比北京稍微暖和一点呢<ed>[/AI]
 
 [IMG]010[SEP]XXXXXXX图片tokenXXXXXXX[/IMG]
 
 [OTHER]011[SEP]小明[SEP]这张图片里是什么？[/OTHER]
 
-[ASST]012[SEP]<tk>需要理解图片内容</tk><lb>010</lb>[IMG]010[SEP]XXXXXXX图片tokenXXXXXXX[/IMG]这张图片中我看到了一只可爱的小猫咪，它有着橘色的毛发，正趴在窗台上晒太阳～<ed>[/ASST]
+[AI]012[SEP]<tk>需要理解图片内容</tk><lb>010</lb>[IMG]010[SEP]XXXXXXX图片tokenXXXXXXX[/IMG]这张图片中我看到了一只可爱的小猫咪，它有着橘色的毛发，正趴在窗台上晒太阳～<ed>[/AI]
 
 [DOC]013[SEP]《人工智能发展报告2025》
 第一章：深度学习的最新进展
@@ -112,17 +112,17 @@ calculate结果: 900[/RET]
 
 [OTHER]014[SEP]小红[SEP]刚才那份文档的主要内容是什么？另外帮我搜索一下"量子计算最新进展"[/OTHER]
 
-[ASST]015[SEP]<tk>用户问了文档总结和网络搜索两件事</tk><lb>013</lb>[DOC]013[SEP]《人工智能发展报告2025》
+[AI]015[SEP]<tk>用户问了文档总结和网络搜索两件事</tk><lb>013</lb>[DOC]013[SEP]《人工智能发展报告2025》
 第一章：深度学习的最新进展
-本章节介绍了Transformer架构的演进...[文档内容省略]...[/DOC]根据刚才的文档，主要讲述了深度学习和Transformer架构的演进～让我再帮你搜索量子计算的信息<to>search_web(query="量子计算最新进展")</to>[/ASST]
+本章节介绍了Transformer架构的演进...[文档内容省略]...[/DOC]根据刚才的文档，主要讲述了深度学习和Transformer架构的演进～让我再帮你搜索量子计算的信息<to>search_web(query="量子计算最新进展")</to>[/AI]
 
 [RET]016[SEP]search_web结果: 2025年量子计算领域取得重大突破，IBM发布了1000量子比特的量子处理器...[/RET]
 
-[ASST]017[SEP]<tk>整合搜索结果回复</tk>搜索结果显示，2025年量子计算领域很火热呢！IBM已经发布了1000量子比特的处理器，这是一个重大突破～<ed>[/ASST]
+[AI]017[SEP]<tk>整合搜索结果回复</tk>搜索结果显示，2025年量子计算领域很火热呢！IBM已经发布了1000量子比特的处理器，这是一个重大突破～<ed>[/AI]
 
 [OTHER]018[SEP]小明[SEP]太棒了！谢谢你[/OTHER]
 
-[ASST]019[SEP]<tk>用户表示感谢，友好回应</tk>不客气～很高兴能帮到你们！有什么问题随时问我哦<ed>[/ASST]
+[AI]019[SEP]<tk>用户表示感谢，友好回应</tk>不客气～很高兴能帮到你们！有什么问题随时问我哦<ed>[/AI]
 ```
 
 </details>

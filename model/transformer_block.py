@@ -18,7 +18,6 @@ class RMSNorm(nn.Module):
         x = x * torch.rsqrt(variance + self.eps)
         return self.weight * x
 
-
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
     """预计算RoPE频率"""
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
@@ -27,7 +26,6 @@ def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
     freqs_cos = torch.cos(freqs)
     freqs_sin = torch.sin(freqs)
     return freqs_cos, freqs_sin
-
 
 def apply_rotary_pos_emb(q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, position_ids: torch.Tensor):
     """应用RoPE位置编码"""
@@ -44,17 +42,14 @@ def apply_rotary_pos_emb(q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, si
     k_embed = (k * cos.repeat(1, 1, 1, 2)) + (rotate_half(k) * sin.repeat(1, 1, 1, 2))
     return q_embed, k_embed
 
-
 def rotate_half(x: torch.Tensor):
     """旋转输入张量的一半维度"""
     x1 = x[..., : x.shape[-1] // 2]
     x2 = x[..., x.shape[-1] // 2 :]
     return torch.cat((-x2, x1), dim=-1)
 
-
 class SwiGLUFeedForward(nn.Module):
     """SwiGLU前馈网络，与Mamba的隐藏尺寸保持一致"""
-
     def __init__(self, hidden_size: int, intermediate_size: int, dropout: float, use_bias: bool):
         super().__init__()
         self.gate_proj = nn.Linear(hidden_size, intermediate_size, bias=use_bias)
@@ -67,10 +62,8 @@ class SwiGLUFeedForward(nn.Module):
         up = self.up_proj(x)
         return self.dropout(self.down_proj(gate * up))
 
-
 class MultiHeadSelfAttention(nn.Module):
     """带KV缓存和RoPE的自注意力实现"""
-
     def __init__(
         self,
         hidden_size: int,
@@ -162,7 +155,6 @@ class MultiHeadSelfAttention(nn.Module):
         output = self.out_proj(context)
         return self.resid_dropout(output), present_key_value
 
-
 class TransformerBlock(nn.Module):
     """用于替换部分Mamba层的Transformer块，支持KV缓存"""
 
@@ -226,12 +218,9 @@ class TransformerBlock(nn.Module):
             use_cache=use_cache,
         )
         hidden_states = residual + self.post_attn_dropout(attn_output)
-
         residual = hidden_states
         hidden_states = self.post_attn_norm(hidden_states)
         ff_output = self.mlp(hidden_states)
         hidden_states = residual + ff_output
 
         return hidden_states, present_kv
-
-

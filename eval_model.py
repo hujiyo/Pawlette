@@ -6,36 +6,29 @@ import torch
 from model.model_pawlette import PawletteConfig, PawletteModelLLM
 from transformers import AutoTokenizer, TextStreamer
 from typing import List, Dict
-
 warnings.filterwarnings('ignore')
-
 
 def apply_chat_template_simple(messages: List[Dict[str, str]], add_generation_prompt: bool = True) -> str:
     """使用与tokenizer_config.json一致的对话模板。"""
-    prompt = ""
-    
+    prompt = ""    
     # 处理系统消息（如果有）
     if messages and messages[0]["role"] == "system":
         prompt += f"[SYS]{messages[0]['content']}[/SYS]\n"
-        messages = messages[1:]
-    
+        messages = messages[1:]    
     # 处理对话历史
     for msg in messages:
         if msg["role"] == "user":
             prompt += f"[OTHER]user[SEP]{msg['content']}[/OTHER]\n"
         elif msg["role"] == "assistant":
-            prompt += f"[AI]{msg['content']}[/AI]\n"
-    
+            prompt += f"[AI]{msg['content']}[/AI]\n"    
     # 添加生成提示符
     if add_generation_prompt and messages and messages[-1]["role"] == "user":
-        prompt += "[AI]"
-    
+        prompt += "[AI]"    
     return prompt
 
 def init_model(args):
     # 纯官方方式加载分词器
     tokenizer = AutoTokenizer.from_pretrained('./model/', use_fast=True)
-
     if args.load == 0:
         config = PawletteConfig()
         modes = {0: 'pretrain', 1: 'full_sft', 2: 'rlhf'}
@@ -63,7 +56,6 @@ def init_model(args):
 
     print(f'Pawlette模型参数量: {sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6:.2f}M(illion)')
     return model.eval(), tokenizer
-
 
 def get_prompt_datas(args):
     if args.model_mode == 0:
@@ -107,7 +99,6 @@ def get_prompt_datas(args):
             prompt_datas = lora_prompt_datas[args.lora_name]
     return prompt_datas
 
-
 def setup_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
@@ -116,7 +107,6 @@ def setup_seed(seed):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-
 
 def main():
     parser = argparse.ArgumentParser(description="Chat with Pawlette")
@@ -131,9 +121,7 @@ def main():
     parser.add_argument('--model_mode', default=0, type=int,
                         help="0: 预训练模型，1: SFT-Chat模型，2: RLHF-Chat模型")
     args = parser.parse_args()
-
     model, tokenizer = init_model(args)
-
     prompts = get_prompt_datas(args)
 
     try:
@@ -219,9 +207,7 @@ def main():
         # 只有在非测试模式下才添加助手回复到对话历史中
         if test_mode == 0 or args.history_cnt > 0:
             messages.append({"role": "assistant", "content": response_final})
-        
         print('\n')
-
 
 if __name__ == "__main__":
     main()

@@ -199,5 +199,5 @@
   "spaces_between_special_tokens": false,
   "tokenizer_class": "PreTrainedTokenizerFast",
   "unk_token": null,
-  "chat_template": "{% if messages[0]['role'] == 'system' %}{% set system_message = messages[0]['content'] %}{{ '[SYS]' + system_message + '[/SYS]\\n' }}{% endif %}{% for message in messages %}{% set content = message['content'] %}{% if message['role'] == 'user' %}{{ '[OTHER]user[SEP]' + content + '[/OTHER]\\n' }}{% elif message['role'] == 'assistant' %}{{ '[AI]' + content + '[/AI]\\n' }}{% endif %}{% endfor %}{% if messages[-1]['role'] == 'user' %}{{ '[AI]' }}{% endif %}"
+  "chat_template": "{% if messages[0]['role'] == 'system' %}{% set system_message = messages[0]['content'] %}{{ '[SYS]' + system_message + '[/SYS]\\n' }}{% endif %}{% for message in messages %}{% set content = message['content'] %}{% if message['role'] == 'user' %}{% set display_name = message['name'] if 'name' in message else 'user' %}{{ '[OTHER]' + display_name + '[SEP]' + content + '[/OTHER]\\n' }}{% elif message['role'] == 'assistant' %}{{ '[AI]' + content + '[/AI]\\n' }}{% endif %}{% endfor %}{% if messages[-1]['role'] == 'user' %}{{ '[AI]' }}{% endif %}"
 }

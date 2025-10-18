@@ -1,48 +1,29 @@
-import json
-import random
-import re
-
-import pandas as pd
-import numpy as np
-from torch.utils.data import Dataset, DataLoader
-import torch
-from sklearn.model_selection import train_test_split
-import os
-import ast
-
+import json,torch, os
+from torch.utils.data import Dataset
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
 
 def dynamic_collate_fn(batch):
     """
-    动态填充的collate函数，用于处理变长序列
-    对Mamba架构特别优化：只填充到批次内最大长度，不浪费计算
-    
-    🔧 标准化：使用Hugging Face标准的-100填充labels
+    1.动态填充的collate函数，用于支持处理变长序列
+    2.只填充到批次内最大长度，不浪费计算资源    
+    3.使用Hugging Face标准的-100填充labels
     """
-    input_ids_list, labels_list, loss_mask_list = zip(*batch)
-    
-    # 找到批次内的最大长度
+    input_ids_list, labels_list, loss_mask_list = zip(*batch)    
     max_len = max(x.size(0) for x in input_ids_list)
-    
     # 动态填充到批次内最大长度
     batch_size = len(input_ids_list)
-    device = input_ids_list[0].device  # 数据已经在GPU上
-    
+    device = input_ids_list[0].device    
     # 初始化填充后的张量
     input_ids_padded = torch.full((batch_size, max_len), 6, dtype=torch.long, device=device)  # pad_token_id = 6
     labels_padded = torch.full((batch_size, max_len), -100, dtype=torch.long, device=device)
-    loss_mask_padded = torch.zeros(batch_size, max_len, dtype=torch.long, device=device)
-    
+    loss_mask_padded = torch.zeros(batch_size, max_len, dtype=torch.long, device=device)    
     # 填充数据
     for i, (input_ids, labels, mask) in enumerate(zip(input_ids_list, labels_list, loss_mask_list)):
         seq_len = input_ids.size(0)
         input_ids_padded[i, :seq_len] = input_ids
         labels_padded[i, :seq_len] = labels
-        loss_mask_padded[i, :seq_len] = mask
-    
+        loss_mask_padded[i, :seq_len] = mask    
     return input_ids_padded, labels_padded, loss_mask_padded
-
 
 class PretrainDataset(Dataset):
     def __init__(self, data_path, tokenizer, max_length=None):
@@ -54,7 +35,7 @@ class PretrainDataset(Dataset):
     def load_data(self, path):
         samples = []
         with open(path, 'r', encoding='utf-8') as f:
-            for line_num, line in enumerate(f, 1):
+            for line in f:
                 data = json.loads(line.strip())
                 samples.append(data)
         return samples
@@ -64,7 +45,6 @@ class PretrainDataset(Dataset):
 
     def __getitem__(self, index):
         sample = self.samples[index]
-
         # 构建输入文本
         if self.max_length is None:
             # 不限制长度，不截断不填充
@@ -85,13 +65,11 @@ class PretrainDataset(Dataset):
             )
             input_ids = encoding.input_ids.squeeze()
             loss_mask = (input_ids != self.tokenizer.pad_token_id)
-
-        # 🔧 标准化：不在数据集中移位，让模型自动处理
         # 将pad token位置设为-100（Hugging Face标准）
         labels = torch.where(input_ids == self.tokenizer.pad_token_id, -100, input_ids)
-        
         return input_ids, labels, loss_mask
 
+#当前项目暂时处于预训练阶段，所以下面的代码暂时用不到
 
 class SFTDataset(Dataset):
     def __init__(self, jsonl_path, tokenizer, max_length=1024):
@@ -100,7 +78,7 @@ class SFTDataset(Dataset):
         self.max_length = max_length
         self.samples = self.load_data(jsonl_path)
         # 使用新的特殊token
-        self.asst_start_id = tokenizer('[ASST]', add_special_tokens=False).input_ids
+        self.asst_start_id = tokenizer('[AI]', add_special_tokens=False).input_ids
         self.end_id = tokenizer('[END]', add_special_tokens=False).input_ids
 
     def __len__(self):
@@ -109,7 +87,7 @@ class SFTDataset(Dataset):
     def load_data(self, path):
         samples = []
         with open(path, 'r', encoding='utf-8') as f:
-            for line_num, line in enumerate(f, 1):
+            for line in f:
                 data = json.loads(line.strip())
                 samples.append(data)
         return samples
@@ -153,14 +131,11 @@ class SFTDataset(Dataset):
 
         # 生成动态损失掩码
         loss_mask = self._generate_loss_mask(input_ids)
-
-        # 🔧 标准化：不在数据集中移位，让模型自动处理
         input_ids = torch.tensor(input_ids, dtype=torch.long)
         labels = torch.where(input_ids == self.tokenizer.pad_token_id, -100, input_ids)
         loss_mask = torch.tensor(loss_mask, dtype=torch.long)
 
         return input_ids, labels, loss_mask
-
 
 class DPODataset(Dataset):
     def __init__(self, file_path, tokenizer, max_length=4096):
@@ -169,7 +144,7 @@ class DPODataset(Dataset):
         self.max_length = max_length
         self.padding = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
         # 使用新的特殊token
-        self.asst_start_id = tokenizer('[ASST]', add_special_tokens=False).input_ids
+        self.asst_start_id = tokenizer('[AI]', add_special_tokens=False).input_ids
         self.end_id = tokenizer('[END]', add_special_tokens=False).input_ids
         with open(file_path, 'r', encoding='utf-8') as f:
             self.data = []
@@ -204,7 +179,6 @@ class DPODataset(Dataset):
 
         rejected_input_ids = rejected_encoding['input_ids']
         rejected_loss_mask = self._generate_loss_mask(rejected_input_ids)
-        # 🔧 标准化：不在数据集中移位，让模型自动处理
         x_chosen = torch.tensor(chosen_input_ids, dtype=torch.long)
         y_chosen = torch.where(torch.tensor(chosen_input_ids) == self.padding, -100, torch.tensor(chosen_input_ids))
         mask_chosen = torch.tensor(chosen_loss_mask, dtype=torch.long)
@@ -239,7 +213,6 @@ class DPODataset(Dataset):
                 i += 1
         return loss_mask
 
-
 class RLAIFDataset(Dataset):
     def __init__(self, jsonl_path, tokenizer, max_length=1024):
         super().__init__()
@@ -247,7 +220,7 @@ class RLAIFDataset(Dataset):
         self.max_length = max_length
         self.samples = self.load_data(jsonl_path)
         # 使用新的特殊token
-        self.asst_start_id = tokenizer('[ASST]', add_special_tokens=False).input_ids
+        self.asst_start_id = tokenizer('[AI]', add_special_tokens=False).input_ids
         self.end_id = tokenizer('[END]', add_special_tokens=False).input_ids
 
     def __len__(self):
@@ -256,7 +229,7 @@ class RLAIFDataset(Dataset):
     def load_data(self, path):
         samples = []
         with open(path, 'r', encoding='utf-8') as f:
-            for line_num, line in enumerate(f, 1):
+            for line in f:
                 data = json.loads(line.strip())
                 samples.append(data)
         return samples
@@ -279,12 +252,10 @@ class RLAIFDataset(Dataset):
         sample = self.samples[index]
         # 构建对话提示
         prompt, answer = self._create_chat_prompt(sample['conversations'])
-
         return {
             'prompt': prompt,
             'answer': answer
         }
-
 
 if __name__ == "__main__":
     pass
