@@ -117,16 +117,13 @@ def train_epoch(epoch, start_step, model, train_loader, optimizer, scaler,
     executed_steps = 0  # 实际执行的步数计数器
     accumulation_counter = 0  # 梯度累积计数器
     
-    if epoch == start_epoch: #断点续训时，从保存的global_step开始    
-        current_global_step = start_global_step
-    else: #新的epoch，基于之前的总步数计算
-        current_global_step = start_global_step + (epoch - start_epoch) * len(train_loader)
+    # 使用checkpoint/上层传入的全局步数作为唯一真值
+    current_global_step = start_global_step
     
     for step, (input_ids, labels, loss_mask) in enumerate(train_loader):
         # 跳过已训练的步骤（用于断点续训）
         if epoch == start_epoch and step < start_step:
-            # 🔧 修复：跳过步骤时也要更新global_step
-            current_global_step += 1
+            # 跳过时不递增global_step；global_step仅计数“实际执行过”的batch
             continue
         
         # 如果是第一个实际执行的步骤，重新设置开始时间
@@ -203,7 +200,7 @@ def train_epoch(epoch, start_step, model, train_loader, optimizer, scaler,
         # 定期保存检查点
         if (step + 1) % CONFIG['save_interval'] == 0 and (not CONFIG['ddp'] or dist.get_rank() == 0):
             checkpoint_path = os.path.join(CONFIG['save_dir'], 'checkpoint_latest.pth')
-            save_checkpoint(epoch, step + 1, model, optimizer, scaler, checkpoint_path, global_step)
+            save_checkpoint(epoch, step + 1, model, optimizer, scaler, checkpoint_path, current_global_step)
             
             # 保存模型权重
             model_path = os.path.join(CONFIG['save_dir'], 'pawlette.pth')

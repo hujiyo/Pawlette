@@ -28,18 +28,28 @@ def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
     return freqs_cos, freqs_sin
 
 def apply_rotary_pos_emb(q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, position_ids: torch.Tensor):
-    """应用RoPE位置编码"""
+    """应用RoPE位置编码（LLaMA标准实现）"""
     # q, k: [batch, num_heads, seq_len, head_dim]
     # cos, sin: [max_seq_len, head_dim//2]
     # position_ids: [batch, seq_len]
     
-    # 选择对应位置的cos/sin
-    cos = cos[position_ids].unsqueeze(1)  # [batch, 1, seq_len, head_dim//2]
-    sin = sin[position_ids].unsqueeze(1)
+    # 选择对应位置的cos/sin值
+    cos = cos[position_ids]  # [batch, seq_len, head_dim//2]
+    sin = sin[position_ids]  # [batch, seq_len, head_dim//2]
     
-    # 将head_dim拆成两半
-    q_embed = (q * cos.repeat(1, 1, 1, 2)) + (rotate_half(q) * sin.repeat(1, 1, 1, 2))
-    k_embed = (k * cos.repeat(1, 1, 1, 2)) + (rotate_half(k) * sin.repeat(1, 1, 1, 2))
+    # 标准做法：通过cat扩展到完整head_dim，每对维度共享同一个旋转角度
+    # 这是LLaMA、Mistral等主流模型的实现方式
+    cos = torch.cat([cos, cos], dim=-1)  # [batch, seq_len, head_dim]
+    sin = torch.cat([sin, sin], dim=-1)  # [batch, seq_len, head_dim]
+    
+    # 添加num_heads维度以匹配q和k的形状
+    cos = cos.unsqueeze(1)  # [batch, 1, seq_len, head_dim]
+    sin = sin.unsqueeze(1)  # [batch, 1, seq_len, head_dim]
+    
+    # 应用RoPE旋转变换：标准公式
+    # q_rotated = q * cos + rotate_half(q) * sin
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
 
 def rotate_half(x: torch.Tensor):
@@ -126,21 +136,22 @@ class MultiHeadSelfAttention(nn.Module):
         
         present_key_value = (key, value) if use_cache else None
         
-        # 计算注意力
+        # 计算注意力分数 [batch, num_heads, seq_len, kv_seq_len]
         kv_seq_len = key.shape[2]
         attn_scores = torch.matmul(query, key.transpose(-2, -1)) * self.scale
 
-        # Causal mask
-        causal_mask = torch.full((seq_len, kv_seq_len), float("-inf"), device=hidden_states.device, dtype=attn_scores.dtype)
-        if seq_len > 1:
-            causal_mask = torch.triu(causal_mask, diagonal=kv_seq_len - seq_len + 1)
-        else:
-            causal_mask.fill_(0.0)
-        attn_scores = attn_scores + causal_mask.unsqueeze(0).unsqueeze(0)
+        # Causal mask: 只在训练/无cache时需要 (seq_len==kv_seq_len)
+        # 推理有cache时past_key_value已是历史，无需额外mask
+        if seq_len == kv_seq_len:  # 训练或首次推理
+            causal_mask = torch.triu(
+                torch.ones((seq_len, seq_len), device=hidden_states.device, dtype=torch.bool),
+                diagonal=1
+            )
+            attn_scores = attn_scores.masked_fill(causal_mask, float("-inf"))
 
-        # Padding mask (如果有)
+        # Padding mask: 遮蔽padding位置 (1=有效, 0=padding)
         if attention_mask is not None:
-            # attention_mask: [batch, kv_seq_len] -> [batch, 1, 1, kv_seq_len]
+            # [batch, kv_seq_len] -> [batch, 1, 1, kv_seq_len]
             if attention_mask.dim() == 2:
                 attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
                 attention_mask = (1.0 - attention_mask) * torch.finfo(attn_scores.dtype).min

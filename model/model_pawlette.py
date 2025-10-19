@@ -8,10 +8,15 @@ from mamba_ssm.utils.generation import InferenceParams
 from .transformer_block import TransformerBlock, RMSNorm
 
 class PawletteConfig(PretrainedConfig):
-    """Pawlette模型配置类"""
+    """Pawlette模型配置类
+    
+    用户可以直接修改此类中的配置值来调整模型参数。
+    所有参数都有详细注释说明其作用。
+    """
     model_type = "pawlette"
-    def __init__(self,**kwargs):
-        super().__init__(**kwargs)
+    
+    def __init__(self, **kwargs):
+        # 基础模型参数（用户可修改）
         self.vocab_size = 6420    # 词汇表大小
         self.hidden_size = 640    # 隐藏层大小
         self.state_size = 256    # SSM状态大小
@@ -59,7 +64,16 @@ class PawletteConfig(PretrainedConfig):
         self.transformer_num_heads = 10
         self.transformer_dropout = 0.0
         self.transformer_attn_dropout = 0.0
-        self.transformer_intermediate_size = int(4 * self.hidden_size)  # 扩展因子3.5: 640 → 2240
+        self.transformer_intermediate_size = int(4 * self.hidden_size)  # 扩展因子4: 640 → 2560
+        
+        # 最后调用父类初始化（这样父类可以看到所有已设置的属性）
+        super().__init__(
+            bos_token_id=self.bos_token_id,
+            eos_token_id=self.eos_token_id,
+            pad_token_id=self.pad_token_id,
+            tie_word_embeddings=self.tie_word_embeddings,
+            **kwargs
+        )
 
 class MambaBlock(nn.Module):
     """Pawlette Mamba2 块"""
@@ -151,6 +165,7 @@ class PawletteModelCore(nn.Module):
         output_hidden_states: bool = False,#是否输出所有层的隐藏状态
         return_dict: bool = True,#是否返回字典
         **kwargs)-> Union[Tuple, dict]:#返回值：Tuple或字典
+        # 缓存控制: Mamba用inference_params(None=禁用), Transformer用use_cache(False=禁用)
         batch_size, seq_len = input_ids.shape
         
         # 初始化InferenceParams（如果未提供）
@@ -242,7 +257,7 @@ class PawletteModelLLM(PreTrainedModel, GenerationMixin):
 
         output_hidden_states = output_hidden_states if output_hidden_states is not None else False
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict        
-        # 训练模式下强制禁用cache，避免KV缓存累积导致OOM
+        # 训练时强制禁用cache: use_cache=False使下游inference_params=None, 双重确保不缓存
         if use_cache is None:
             use_cache = self.config.use_cache
         if self.training:
