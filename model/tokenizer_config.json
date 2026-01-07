@@ -4,7 +4,7 @@
   "add_prefix_space": false,
   "added_tokens_decoder": {
     "0": {
-      "content": "[AI]",
+      "content": "[AST]",
       "lstrip": false,
       "normalized": false,
       "rstrip": false,
@@ -12,7 +12,7 @@
       "special": true
     },
     "1": {
-      "content": "[/AI]",
+      "content": "[/AST]",
       "lstrip": false,
       "normalized": false,
       "rstrip": false,
@@ -20,7 +20,7 @@
       "special": true
     },
     "2": {
-      "content": "[OTHER]",
+      "content": "[USR]",
       "lstrip": false,
       "normalized": false,
       "rstrip": false,
@@ -28,7 +28,7 @@
       "special": true
     },
     "3": {
-      "content": "[/OTHER]",
+      "content": "[/USR]",
       "lstrip": false,
       "normalized": false,
       "rstrip": false,
@@ -60,7 +60,7 @@
       "special": true
     },
     "7": {
-      "content": "[RET]",
+      "content": "[OBS]",
       "lstrip": false,
       "normalized": false,
       "rstrip": false,
@@ -68,7 +68,7 @@
       "special": true
     },
     "8": {
-      "content": "[/RET]",
+      "content": "[/OBS]",
       "lstrip": false,
       "normalized": false,
       "rstrip": false,
@@ -76,7 +76,7 @@
       "special": true
     },
     "9": {
-      "content": "[IMG]",
+      "content": "<tools>",
       "lstrip": false,
       "normalized": false,
       "rstrip": false,
@@ -84,7 +84,7 @@
       "special": true
     },
     "10": {
-      "content": "[/IMG]",
+      "content": "</tools>",
       "lstrip": false,
       "normalized": false,
       "rstrip": false,
@@ -92,7 +92,7 @@
       "special": true
     },
     "11": {
-      "content": "<ed>",
+      "content": "<end>",
       "lstrip": false,
       "normalized": false,
       "rstrip": false,
@@ -100,7 +100,7 @@
       "special": true
     },
     "12": {
-      "content": "<tk>",
+      "content": "<think>",
       "lstrip": false,
       "normalized": false,
       "rstrip": false,
@@ -108,7 +108,7 @@
       "special": true
     },
     "13": {
-      "content": "</tk>",
+      "content": "</think>",
       "lstrip": false,
       "normalized": false,
       "rstrip": false,
@@ -116,7 +116,7 @@
       "special": true
     },
     "14": {
-      "content": "<lb>",
+      "content": "<call>",
       "lstrip": false,
       "normalized": false,
       "rstrip": false,
@@ -124,7 +124,7 @@
       "special": true
     },
     "15": {
-      "content": "</lb>",
+      "content": "</call>",
       "lstrip": false,
       "normalized": false,
       "rstrip": false,
@@ -132,7 +132,7 @@
       "special": true
     },
     "16": {
-      "content": "<to>",
+      "content": "special_token_0",
       "lstrip": false,
       "normalized": false,
       "rstrip": false,
@@ -140,14 +140,6 @@
       "special": true
     },
     "17": {
-      "content": "</to>",
-      "lstrip": false,
-      "normalized": false,
-      "rstrip": false,
-      "single_word": false,
-      "special": true
-    },
-    "18": {
       "content": "special_token_1",
       "lstrip": false,
       "normalized": false,
@@ -155,7 +147,7 @@
       "single_word": false,
       "special": true
     },
-    "19": {
+    "18": {
       "content": "special_token_2",
       "lstrip": false,
       "normalized": false,
@@ -163,7 +155,7 @@
       "single_word": false,
       "special": true
     },
-    "20": {
+    "19": {
       "content": "special_token_3",
       "lstrip": false,
       "normalized": false,
@@ -171,7 +163,7 @@
       "single_word": false,
       "special": true
     },
-    "21": {
+    "20": {
       "content": "special_token_4",
       "lstrip": false,
       "normalized": false,
@@ -179,8 +171,16 @@
       "single_word": false,
       "special": true
     },
-    "22": {
+    "21": {
       "content": "special_token_5",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "22": {
+      "content": "special_token_6",
       "lstrip": false,
       "normalized": false,
       "rstrip": false,
@@ -191,7 +191,7 @@
   "additional_special_tokens": [],
   "bos_token": null,
   "clean_up_tokenization_spaces": false,
-  "eos_token": "<ed>",
+  "eos_token": "<end>",
   "legacy": true,
   "model_max_length": 32768,
   "pad_token": "[SEP]",

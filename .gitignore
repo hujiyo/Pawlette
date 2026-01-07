@@ -8,3 +8,5 @@ __pycache__/
 *.txt
 *.pth
 extract_loss.py
+CLAUDE.md
+.*

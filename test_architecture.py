@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Pawlette混合架构测试脚本
-测试Mamba+Transformer混合架构的正确性
+Pawlette纯Mamba2架构测试脚本
+测试纯Mamba2架构的正确性
 """
 
 import torch
@@ -13,7 +13,6 @@ from model.model_pawlette import (
     MambaBlock,
     count_parameters
 )
-from model.transformer_block import TransformerBlock
 
 
 def print_separator(title):
@@ -31,39 +30,38 @@ def test_architecture_layout():
     model = PawletteModelLLM(config)
     
     print(f"总层数: {config.num_hidden_layers}")
-    print(f"Transformer层位置: {config.transformer_layers}")
+    print(f"架构类型: 纯Mamba2架构")
     print(f"\n层类型检查:")
     
     mamba_count = 0
-    transformer_count = 0
     errors = []
     
     for i, layer in enumerate(model.model.layers):
-        expected_type = "Transformer" if i in config.transformer_layers else "Mamba"
-        actual_type = "Transformer" if isinstance(layer, TransformerBlock) else "Mamba"
+        is_mamba = isinstance(layer, MambaBlock)
         
-        status = "✅" if expected_type == actual_type else "❌"
-        print(f"  层{i:2d}: 期望={expected_type:11s} 实际={actual_type:11s} {status}")
+        status = "✅" if is_mamba else "❌"
+        layer_type = "Mamba" if is_mamba else "Unknown"
+        print(f"  层{i:2d}: {layer_type:11s} {status}")
         
-        if expected_type != actual_type:
-            errors.append(f"Layer {i}: expected {expected_type}, got {actual_type}")
-        
-        if isinstance(layer, TransformerBlock):
-            transformer_count += 1
-        elif isinstance(layer, MambaBlock):
+        if not is_mamba:
+            errors.append(f"Layer {i}: expected Mamba, got {type(layer).__name__}")
+        else:
             mamba_count += 1
     
     print(f"\n统计:")
     print(f"  Mamba层: {mamba_count}")
-    print(f"  Transformer层: {transformer_count}")
+    print(f"  总层数: {config.num_hidden_layers}")
     
     if errors:
         print(f"\n❌ 发现 {len(errors)} 个错误:")
         for error in errors:
             print(f"  - {error}")
         return False
+    elif mamba_count != config.num_hidden_layers:
+        print(f"\n❌ 层数不匹配: 期望{config.num_hidden_layers}，实际{mamba_count}")
+        return False
     else:
-        print(f"\n✅ 架构布局正确!")
+        print(f"\n✅ 架构布局正确！所有层都是Mamba2层！")
         return True
 
 
@@ -103,17 +101,11 @@ def test_forward_pass():
         print(f"  ✅ past_key_values类型: {type(outputs_infer.past_key_values)}")
         
         if outputs_infer.past_key_values is not None:
-            pkv = outputs_infer.past_key_values
-            print(f"  ✅ inference_params: {pkv.get('inference_params') is not None}")
-            print(f"  ✅ transformer_kv_caches: {pkv.get('transformer_kv_caches') is not None}")
-            
-            # 检查Transformer KV缓存
-            if pkv.get('transformer_kv_caches'):
-                kv_caches = pkv['transformer_kv_caches']
-                print(f"\n  Transformer KV缓存详情:")
-                for layer_idx in sorted(kv_caches.keys()):
-                    key, value = kv_caches[layer_idx]
-                    print(f"    层{layer_idx}: key={key.shape}, value={value.shape}")
+            from mamba_ssm.utils.generation import InferenceParams
+            is_inference_params = isinstance(outputs_infer.past_key_values, InferenceParams)
+            print(f"  ✅ inference_params: {is_inference_params}")
+            if is_inference_params:
+                print(f"  ✅ Mamba2 缓存已正确初始化")
         
         print(f"\n✅ 前向传播测试通过!")
         return True
@@ -126,8 +118,8 @@ def test_forward_pass():
 
 
 def test_kv_cache():
-    """测试3：KV缓存机制"""
-    print_separator("测试3: KV缓存机制测试")
+    """测试3：Mamba2缓存机制"""
+    print_separator("测试3: Mamba2缓存机制测试")
     
     config = PawletteConfig()
     model = PawletteModelLLM(config)
@@ -145,15 +137,13 @@ def test_kv_cache():
         
         print(f"  ✅ 输出logits形状: {outputs_1.logits.shape}")
         
-        # 验证Transformer KV缓存
-        kv_caches_1 = outputs_1.past_key_values['transformer_kv_caches']
-        print(f"\n  Transformer KV缓存（第1次）:")
-        for layer_idx in sorted(kv_caches_1.keys()):
-            key, value = kv_caches_1[layer_idx]
-            print(f"    层{layer_idx}: key.shape[2]={key.shape[2]} (应该是{seq_len_1})")
-            if key.shape[2] != seq_len_1:
-                print(f"    ❌ 缓存长度不正确!")
-                return False
+        # 验证Mamba2缓存
+        from mamba_ssm.utils.generation import InferenceParams
+        if outputs_1.past_key_values is not None:
+            is_inference_params = isinstance(outputs_1.past_key_values, InferenceParams)
+            print(f"  ✅ Mamba2 缓存类型正确: {is_inference_params}")
+            if is_inference_params:
+                print(f"  ✅ seqlen_offset: {outputs_1.past_key_values.seqlen_offset}")
         
         # 第二次调用：只处理1个新token，使用之前的缓存
         seq_len_2 = 1
@@ -171,22 +161,21 @@ def test_kv_cache():
         print(f"  ✅ 输出logits形状: {outputs_2.logits.shape}")
         
         # 验证缓存更新
-        kv_caches_2 = outputs_2.past_key_values['transformer_kv_caches']
-        expected_len = seq_len_1 + seq_len_2
-        
-        print(f"\n  Transformer KV缓存（第2次）:")
-        for layer_idx in sorted(kv_caches_2.keys()):
-            key, value = kv_caches_2[layer_idx]
-            print(f"    层{layer_idx}: key.shape[2]={key.shape[2]} (应该是{expected_len})")
-            if key.shape[2] != expected_len:
-                print(f"    ❌ 缓存长度不正确!")
+        if outputs_2.past_key_values is not None:
+            expected_offset = seq_len_1 + seq_len_2
+            actual_offset = outputs_2.past_key_values.seqlen_offset
+            print(f"  ✅ seqlen_offset: {actual_offset} (期望: {expected_offset})")
+            if actual_offset == expected_offset:
+                print(f"  ✅ 缓存偏移量正确!")
+            else:
+                print(f"  ❌ 缓存偏移量不正确!")
                 return False
         
-        print(f"\n✅ KV缓存机制测试通过!")
+        print(f"\n✅ Mamba2缓存机制测试通过!")
         return True
         
     except Exception as e:
-        print(f"\n❌ KV缓存测试失败: {e}")
+        print(f"\n❌ Mamba2缓存测试失败: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -322,23 +311,17 @@ def test_parameter_count():
     embed_params = sum(p.numel() for p in model.model.embed_tokens.parameters())
     print(f"  嵌入层: {embed_params/1e6:.2f}M")
     
-    # Mamba和Transformer层
+    # Mamba层
     mamba_params = 0
-    transformer_params = 0
     
     for i, layer in enumerate(model.model.layers):
         layer_params = sum(p.numel() for p in layer.parameters())
-        if isinstance(layer, TransformerBlock):
-            transformer_params += layer_params
-            print(f"  层{i:2d} (Transformer): {layer_params/1e6:.2f}M")
-        else:
-            mamba_params += layer_params
-            if i == 0:  # 只打印第一个Mamba层作为示例
-                print(f"  层{i:2d} (Mamba):      {layer_params/1e6:.2f}M")
+        mamba_params += layer_params
+        if i == 0:  # 只打印第一个Mamba层作为示例
+            print(f"  层{i:2d} (Mamba): {layer_params/1e6:.2f}M")
     
     print(f"  ... (省略其他Mamba层)")
     print(f"\n  总Mamba参数: {mamba_params/1e6:.2f}M")
-    print(f"  总Transformer参数: {transformer_params/1e6:.2f}M")
     
     # 输出层
     output_params = sum(p.numel() for p in model.lm_head.parameters())
@@ -355,7 +338,7 @@ def test_parameter_count():
 def run_all_tests():
     """运行所有测试"""
     print("\n" + "="*60)
-    print("  Pawlette混合架构测试套件")
+    print("  Pawlette纯Mamba2架构测试套件")
     print("="*60)
     
     tests = [
@@ -396,7 +379,7 @@ def run_all_tests():
     print(f"\n总计: {passed} 通过, {failed} 失败")
     
     if failed == 0:
-        print("\n🎉 所有测试通过！混合架构运行正常。")
+        print("\n🎉 所有测试通过！纯Mamba2架构运行正常。")
         return True
     else:
         print(f"\n⚠️ 有 {failed} 个测试失败，请检查代码。")

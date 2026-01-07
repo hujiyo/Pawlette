@@ -5,7 +5,7 @@
   "added_tokens": [
     {
       "id": 0,
-      "content": "[AI]",
+      "content": "[AST]",
       "single_word": false,
       "lstrip": false,
       "rstrip": false,
@@ -14,7 +14,7 @@
     },
     {
       "id": 1,
-      "content": "[/AI]",
+      "content": "[/AST]",
       "single_word": false,
       "lstrip": false,
       "rstrip": false,
@@ -23,7 +23,7 @@
     },
     {
       "id": 2,
-      "content": "[OTHER]",
+      "content": "[USR]",
       "single_word": false,
       "lstrip": false,
       "rstrip": false,
@@ -32,7 +32,7 @@
     },
     {
       "id": 3,
-      "content": "[/OTHER]",
+      "content": "[/USR]",
       "single_word": false,
       "lstrip": false,
       "rstrip": false,
@@ -68,7 +68,7 @@
     },
     {
       "id": 7,
-      "content": "[RET]",
+      "content": "[OBS]",
       "single_word": false,
       "lstrip": false,
       "rstrip": false,
@@ -77,7 +77,7 @@
     },
     {
       "id": 8,
-      "content": "[/RET]",
+      "content": "[/OBS]",
       "single_word": false,
       "lstrip": false,
       "rstrip": false,
@@ -86,7 +86,7 @@
     },
     {
       "id": 9,
-      "content": "[IMG]",
+      "content": "<tools>",
       "single_word": false,
       "lstrip": false,
       "rstrip": false,
@@ -95,7 +95,7 @@
     },
     {
       "id": 10,
-      "content": "[/IMG]",
+      "content": "</tools>",
       "single_word": false,
       "lstrip": false,
       "rstrip": false,
@@ -104,7 +104,7 @@
     },
     {
       "id": 11,
-      "content": "<ed>",
+      "content": "<end>",
       "single_word": false,
       "lstrip": false,
       "rstrip": false,
@@ -113,7 +113,7 @@
     },
     {
       "id": 12,
-      "content": "<tk>",
+      "content": "<think>",
       "single_word": false,
       "lstrip": false,
       "rstrip": false,
@@ -122,7 +122,7 @@
     },
     {
       "id": 13,
-      "content": "</tk>",
+      "content": "</think>",
       "single_word": false,
       "lstrip": false,
       "rstrip": false,
@@ -131,7 +131,7 @@
     },
     {
       "id": 14,
-      "content": "<lb>",
+      "content": "<call>",
       "single_word": false,
       "lstrip": false,
       "rstrip": false,
@@ -140,7 +140,7 @@
     },
     {
       "id": 15,
-      "content": "</lb>",
+      "content": "</call>",
       "single_word": false,
       "lstrip": false,
       "rstrip": false,
@@ -149,7 +149,7 @@
     },
     {
       "id": 16,
-      "content": "<to>",
+      "content": "special_token_0",
       "single_word": false,
       "lstrip": false,
       "rstrip": false,
@@ -158,15 +158,6 @@
     },
     {
       "id": 17,
-      "content": "</to>",
-      "single_word": false,
-      "lstrip": false,
-      "rstrip": false,
-      "normalized": false,
-      "special": true
-    },
-    {
-      "id": 18,
       "content": "special_token_1",
       "single_word": false,
       "lstrip": false,
@@ -175,7 +166,7 @@
       "special": true
     },
     {
-      "id": 19,
+      "id": 18,
       "content": "special_token_2",
       "single_word": false,
       "lstrip": false,
@@ -184,7 +175,7 @@
       "special": true
     },
     {
-      "id": 20,
+      "id": 19,
       "content": "special_token_3",
       "single_word": false,
       "lstrip": false,
@@ -193,7 +184,7 @@
       "special": true
     },
     {
-      "id": 21,
+      "id": 20,
       "content": "special_token_4",
       "single_word": false,
       "lstrip": false,
@@ -202,8 +193,17 @@
       "special": true
     },
     {
-      "id": 22,
+      "id": 21,
       "content": "special_token_5",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 22,
+      "content": "special_token_6",
       "single_word": false,
       "lstrip": false,
       "rstrip": false,
@@ -235,29 +235,29 @@
     "byte_fallback": false,
     "ignore_merges": false,
     "vocab": {
-      "[AI]": 0,
-      "[/AI]": 1,
-      "[OTHER]": 2,
-      "[/OTHER]": 3,
+      "[AST]": 0,
+      "[/AST]": 1,
+      "[USR]": 2,
+      "[/USR]": 3,
       "[SYS]": 4,
       "[/SYS]": 5,
       "[SEP]": 6,
-      "[RET]": 7,
-      "[/RET]": 8,
-      "[IMG]": 9,
-      "[/IMG]": 10,
-      "<ed>": 11,
-      "<tk>": 12,
-      "</tk>": 13,
-      "<lb>": 14,
-      "</lb>": 15,
-      "<to>": 16,
-      "</to>": 17,
-      "special_token_1": 18,
-      "special_token_2": 19,
-      "special_token_3": 20,
-      "special_token_4": 21,
-      "special_token_5": 22,
+      "[OBS]": 7,
+      "[/OBS]": 8,
+      "<tools>": 9,
+      "</tools>": 10,
+      "<end>": 11,
+      "<think>": 12,
+      "</think>": 13,
+      "<call>": 14,
+      "</call>": 15,
+      "special_token_0": 16,
+      "special_token_1": 17,
+      "special_token_2": 18,
+      "special_token_3": 19,
+      "special_token_4": 20,
+      "special_token_5": 21,
+      "special_token_6": 22,
       "!": 23,
       "\"": 24,
       "#": 25,

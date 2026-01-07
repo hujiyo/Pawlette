@@ -1,7 +1,5 @@
 import os
 import sys
-__package__ = "trainer"
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import time
 import math
@@ -29,12 +27,12 @@ CONFIG = {
     'weight_decay': 0.01,
     
     # 数据配置
-    'data_path': '../dataset/pretrain_data.jsonl',
+    'data_path': 'dataset/pretrain_data.jsonl',
     'max_seq_len': None,  # 不限制序列长度
-    'tokenizer_path': '../model/',
-    
+    'tokenizer_path': 'model/',
+
     # 输出配置
-    'out_dir': '../out',
+    'out_dir': 'out',
     'log_interval': 80,
     'save_interval': 800,
     
@@ -142,10 +140,46 @@ def train_epoch(epoch, start_step, model, train_loader, optimizer, scaler,
         #使用正确的全局步数
         global_step = current_global_step
         
-        # 前向传播
+        # 前向传播 - 使用LongSSM隐藏状态复用机制
+        # 在batch内,第一个序列零初始化,后续序列复用前一个序列的隐藏状态以改善长度外推
+        batch_size = input_ids.size(0)
+        all_losses = []
+        
         with ctx:
-            outputs = model(input_ids=input_ids, labels=labels, attention_mask=attention_mask)        
-            loss = outputs.loss #使用模型自带的loss计算（模型内部自动处理shift）            
+            # 初始化inference_params用于存储隐藏状态
+            from mamba_ssm.utils.generation import InferenceParams
+            inference_params = None
+            
+            for batch_idx in range(batch_size):
+                # 获取当前序列
+                current_input_ids = input_ids[batch_idx:batch_idx+1]  # [1, seq_len]
+                current_labels = labels[batch_idx:batch_idx+1]  # [1, seq_len]
+                current_attention_mask = attention_mask[batch_idx:batch_idx+1] if attention_mask is not None else None
+                
+                # 第一个序列使用零初始化(inference_params=None),后续序列复用隐藏状态
+                if batch_idx == 0:
+                    inference_params = None  # 第一个序列零初始化
+                # else: 复用上一个序列的inference_params
+                
+                # 前向传播
+                outputs = model(
+                    input_ids=current_input_ids,
+                    labels=current_labels,
+                    attention_mask=current_attention_mask,
+                    inference_params=inference_params,
+                    use_cache=True  # 启用缓存以保存隐藏状态
+                )
+                
+                all_losses.append(outputs.loss)
+                
+                # 更新inference_params供下一个序列使用
+                inference_params = outputs.past_key_values
+                if inference_params is not None:
+                    # 重置seqlen_offset,让下一个序列从头开始但复用隐藏状态
+                    inference_params.seqlen_offset = 0
+            
+            # 计算batch的平均损失
+            loss = torch.stack(all_losses).mean()
             loss = loss / CONFIG['accumulation_steps']# 梯度累积
         # 反向传播
         scaler.scale(loss).backward()
@@ -236,8 +270,8 @@ def init_model():
         else:
             Logger(f"⚠️ 预训练模型文件不存在: {CONFIG['pretrained_path']}")
     
-    # 加载分词器,先将相对路径转换为绝对路径
-    tokenizer_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'model'))
+    # 加载分词器
+    tokenizer_path = CONFIG['tokenizer_path']
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, use_fast=True)
     config.pad_token_id = tokenizer.pad_token_id
     config.bos_token_id = tokenizer.bos_token_id
