@@ -9,21 +9,31 @@ from typing import List, Dict
 warnings.filterwarnings('ignore')
 
 def apply_chat_template_simple(messages: List[Dict[str, str]], add_generation_prompt: bool = True) -> str:
-    """使用与tokenizer_config.json一致的对话模板。"""
-    prompt = ""    
+    """使用PCML协议的对话模板（与tokenizer_config.json一致）
+
+    PCML格式（按规范定义）:
+    - [SYS]content[/SYS]
+    - [USR]key="value"[SEP]content[/USR]
+    - [AST]content<end>[/AST]
+    """
+    prompt = ""
     # 处理系统消息（如果有）
     if messages and messages[0]["role"] == "system":
         prompt += f"[SYS]{messages[0]['content']}[/SYS]\n"
-        messages = messages[1:]    
+        messages = messages[1:]
     # 处理对话历史
     for msg in messages:
         if msg["role"] == "user":
-            prompt += f"[OTHER]user[SEP]{msg['content']}[/OTHER]\n"
+            # PCML规范: [USR]key="value"[SEP]content[/USR]
+            if "name" in msg:
+                prompt += f"[USR]name=\"{msg['name']}\"[SEP]{msg['content']}[/USR]\n"
+            else:
+                prompt += f"[USR]{msg['content']}[/USR]\n"
         elif msg["role"] == "assistant":
-            prompt += f"[AI]{msg['content']}[/AI]\n"    
+            prompt += f"[AST]{msg['content']}<end>[/AST]\n"
     # 添加生成提示符
     if add_generation_prompt and messages and messages[-1]["role"] == "user":
-        prompt += "[AI]"    
+        prompt += "[AST]"
     return prompt
 
 def init_model(args):

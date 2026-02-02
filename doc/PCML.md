@@ -92,13 +92,13 @@
 [SYS]You are a helpful assistant with access to weather tools.
 <tools>[{"name":"get_weather","description":"Get current weather","parameters":{"location":{"type":"string"},"unit":{"type":"string"}}}]</tools>[/SYS]
 
-[USR name="Alice"]What's the weather in Beijing?[/USR]
+[USR]name="Alice"[SEP]What's the weather in Beijing?[/USR]
 
 [AST]<think>User wants to know Beijing's weather. I need to call get_weather tool.</think>
 <call>{"id": "call_abc123", "name": "get_weather", "arguments": {"location": "Beijing", "unit": "celsius"}}</call><end>[/AST]
              ↓ (系统检测到<call>，执行工具调用)
 
-[OBS id="call_abc123"]25°C, Sunny[/OBS]
+[OBS]id="call_abc123"[SEP]25°C, Sunny[/OBS]
 
 [AST]The weather in Beijing is 25 degrees Celsius and sunny.<end>[/AST]
 ```
@@ -111,10 +111,10 @@
 |------------|-----------|------|
 | `role: "system"` | `[SYS]...[/SYS]` | 系统指令容器 |
 | `role: "user"` | `[USR]...[/USR]` | 用户消息容器 |
-| `name: "Alice"` | `[USR name="Alice"]` | 元数据通过 key-value 形式嵌入 |
+| `name: "Alice"` | `[USR]name="Alice"[SEP]...[/USR]` | 元数据通过 key-value 形式嵌入 |
 | `role: "assistant"` + `tool_calls` | `<call>{...}</call>` | 工具调用使用结构化 JSON |
 | CoT / 内部推理 | `<think>...</think>` | 显式推理块（可剥离） |
-| `role: "tool"` | `[OBS id="..."]...[/OBS]` | 工具返回结果 |
+| `role: "tool"` | `[OBS]id="..."[SEP]...[/OBS]` | 工具返回结果 |
 | 消息结束 | `<end>` | 触发 stop_token，系统自动添加闭合标签 |
 
 ---

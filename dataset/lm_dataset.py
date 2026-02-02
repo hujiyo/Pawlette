@@ -77,9 +77,12 @@ class SFTDataset(Dataset):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.samples = self.load_data(jsonl_path)
-        # 使用新的特殊token
-        self.asst_start_id = tokenizer('[AI]', add_special_tokens=False).input_ids
-        self.end_id = tokenizer('[END]', add_special_tokens=False).input_ids
+        # 使用PCML协议的特殊token
+        self.asst_start_token = '[AST]'
+        self.asst_end_token = '[/AST]'
+        self.end_token = '<end>'
+        self.asst_start_id = tokenizer(self.asst_start_token, add_special_tokens=False).input_ids
+        self.end_id = tokenizer(self.end_token, add_special_tokens=False).input_ids
 
     def __len__(self):
         return len(self.samples)
@@ -105,17 +108,22 @@ class SFTDataset(Dataset):
         )
 
     def _generate_loss_mask(self, input_ids):
+        """基于PCML协议的[AST]...<end>[/AST]标记生成loss mask"""
         loss_mask = [0] * len(input_ids)
         i = 0
         while i < len(input_ids):
+            # 查找 [AST] 开始标记
             if input_ids[i:i + len(self.asst_start_id)] == self.asst_start_id:
                 start = i + len(self.asst_start_id)
                 end = start
+                # 查找 <end> 标记
                 while end < len(input_ids):
                     if input_ids[end:end + len(self.end_id)] == self.end_id:
                         break
                     end += 1
-                for j in range(start + 1, min(end + len(self.end_id) + 1, self.max_length)):
+                # 从 [AST] 后到 <end>（含）计算loss
+                end_with_token = min(end + len(self.end_id), len(input_ids))
+                for j in range(start, min(end_with_token, self.max_length)):
                     loss_mask[j] = 1
                 i = end + len(self.end_id) if end < len(input_ids) else len(input_ids)
             else:
@@ -143,9 +151,12 @@ class DPODataset(Dataset):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.padding = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
-        # 使用新的特殊token
-        self.asst_start_id = tokenizer('[AI]', add_special_tokens=False).input_ids
-        self.end_id = tokenizer('[END]', add_special_tokens=False).input_ids
+        # 使用PCML协议的特殊token
+        self.asst_start_token = '[AST]'
+        self.asst_end_token = '[/AST]'
+        self.end_token = '<end>'
+        self.asst_start_id = tokenizer(self.asst_start_token, add_special_tokens=False).input_ids
+        self.end_id = tokenizer(self.end_token, add_special_tokens=False).input_ids
         with open(file_path, 'r', encoding='utf-8') as f:
             self.data = []
             for line in f:
@@ -196,17 +207,22 @@ class DPODataset(Dataset):
         }
 
     def _generate_loss_mask(self, input_ids):
+        """基于PCML协议的[AST]...<end>...[/AST]标记生成loss mask"""
         loss_mask = [0] * len(input_ids)
         i = 0
         while i < len(input_ids):
+            # 查找 [AST] 开始标记
             if input_ids[i:i + len(self.asst_start_id)] == self.asst_start_id:
                 start = i + len(self.asst_start_id)
                 end = start
+                # 查找 <end> 标记
                 while end < len(input_ids):
                     if input_ids[end:end + len(self.end_id)] == self.end_id:
                         break
                     end += 1
-                for j in range(start + 1, min(end + len(self.end_id) + 1, self.max_length)):
+                # 从 [AST] 后到 <end>（含）计算loss
+                end_with_token = min(end + len(self.end_id), len(input_ids))
+                for j in range(start, min(end_with_token, self.max_length)):
                     loss_mask[j] = 1
                 i = end + len(self.end_id) if end < len(input_ids) else len(input_ids)
             else:
@@ -219,9 +235,12 @@ class RLAIFDataset(Dataset):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.samples = self.load_data(jsonl_path)
-        # 使用新的特殊token
-        self.asst_start_id = tokenizer('[AI]', add_special_tokens=False).input_ids
-        self.end_id = tokenizer('[END]', add_special_tokens=False).input_ids
+        # 使用PCML协议的特殊token
+        self.asst_start_token = '[AST]'
+        self.asst_end_token = '[/AST]'
+        self.end_token = '<end>'
+        self.asst_start_id = tokenizer(self.asst_start_token, add_special_tokens=False).input_ids
+        self.end_id = tokenizer(self.end_token, add_special_tokens=False).input_ids
 
     def __len__(self):
         return len(self.samples)
