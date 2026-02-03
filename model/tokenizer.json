@@ -113,7 +113,7 @@
     },
     {
       "id": 12,
-      "content": "<think>",
+      "content": "<thinks>",
       "single_word": false,
       "lstrip": false,
       "rstrip": false,
@@ -122,7 +122,7 @@
     },
     {
       "id": 13,
-      "content": "</think>",
+      "content": "</thinks>",
       "single_word": false,
       "lstrip": false,
       "rstrip": false,
@@ -247,8 +247,8 @@
       "<tools>": 9,
       "</tools>": 10,
       "<end>": 11,
-      "<think>": 12,
-      "</think>": 13,
+      "<thinks>": 12,
+      "</thinks>": 13,
       "<call>": 14,
       "</call>": 15,
       "special_token_0": 16,

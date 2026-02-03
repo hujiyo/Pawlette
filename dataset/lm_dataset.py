@@ -207,7 +207,7 @@ class DPODataset(Dataset):
         }
 
     def _generate_loss_mask(self, input_ids):
-        """基于PCML协议的[AST]...<end>...[/AST]标记生成loss mask"""
+        """基于PCML协议的[AST]...<end>[/AST]标记生成loss mask"""
         loss_mask = [0] * len(input_ids)
         i = 0
         while i < len(input_ids):

@@ -13,7 +13,7 @@
 - **`[USR]<key>="<value>"[SEP]...[/USR]`**
   - **Mapping**: `{"role": "user", "content": "..."}`
 
-- **`[AST]<key>="<value>"[SEP]...[/AST]`**
+- **`[AST]<key>="<value>"[SEP]...<end>[/AST]`**
   - **Mapping**: `{"role": "assistant", "content": "..."}`
   - **定义**: 模型生成域。包含文本回复、思维链或工具调用请求。
 
@@ -24,7 +24,7 @@
 ### 3. 内容流嵌入 (Content Stream)
 本部分定义了容器内部的**内容级**表达。为了与外层结构区分，内部嵌入统一采用 `<...>` XML 风格标记。
 
-- **`<think>...</think>`**
+- **`<thinks>...</thinks>`**
   - **定义**: 显式推理块 (Explicit Reasoning Block)。模型在此区域输出 CoT (Chain of Thought)，在最终映射回 JSON 时，该部分通常被剥离或存入特定字段（如 `reasoning_content`）。
 
 - **`<tools>[{...}{...}...]</tools>`**
@@ -94,7 +94,7 @@
 
 [USR]name="Alice"[SEP]What's the weather in Beijing?[/USR]
 
-[AST]<think>User wants to know Beijing's weather. I need to call get_weather tool.</think>
+[AST]<thinks>User wants to know Beijing's weather. I need to call get_weather tool.</thinks>
 <call>{"id": "call_abc123", "name": "get_weather", "arguments": {"location": "Beijing", "unit": "celsius"}}</call><end>[/AST]
              ↓ (系统检测到<call>，执行工具调用)
 
@@ -113,7 +113,7 @@
 | `role: "user"` | `[USR]...[/USR]` | 用户消息容器 |
 | `name: "Alice"` | `[USR]name="Alice"[SEP]...[/USR]` | 元数据通过 key-value 形式嵌入 |
 | `role: "assistant"` + `tool_calls` | `<call>{...}</call>` | 工具调用使用结构化 JSON |
-| CoT / 内部推理 | `<think>...</think>` | 显式推理块（可剥离） |
+| CoT / 内部推理 | `<thinks>...</thinks>` | 显式推理块（可剥离） |
 | `role: "tool"` | `[OBS]id="..."[SEP]...[/OBS]` | 工具返回结果 |
 | 消息结束 | `<end>` | 触发 stop_token，系统自动添加闭合标签 |
 

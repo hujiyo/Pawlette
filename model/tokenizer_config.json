@@ -100,7 +100,7 @@
       "special": true
     },
     "12": {
-      "content": "<think>",
+      "content": "<thinks>",
       "lstrip": false,
       "normalized": false,
       "rstrip": false,
@@ -108,7 +108,7 @@
       "special": true
     },
     "13": {
-      "content": "</think>",
+      "content": "</thinks>",
       "lstrip": false,
       "normalized": false,
       "rstrip": false,

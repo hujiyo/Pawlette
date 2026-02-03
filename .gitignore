@@ -10,3 +10,4 @@ __pycache__/
 extract_loss.py
 CLAUDE.md
 .*
+log/
