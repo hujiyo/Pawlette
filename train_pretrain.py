@@ -116,7 +116,7 @@ def train_epoch(epoch, start_step, model, train_loader, optimizer, scaler,
     # 使用checkpoint/上层传入的全局步数作为唯一真值
     current_global_step = start_global_step
     
-    for step, (input_ids, labels, loss_mask) in enumerate(train_loader):
+    for step, (input_ids, labels, attention_mask) in enumerate(train_loader):
         # 跳过已训练的步骤（用于断点续训）
         if epoch == start_epoch and step < start_step:
             # 跳过时不递增global_step；global_step仅计数“实际执行过”的batch
@@ -133,9 +133,9 @@ def train_epoch(epoch, start_step, model, train_loader, optimizer, scaler,
         
         input_ids = input_ids.to(CONFIG['device'])
         labels = labels.to(CONFIG['device'])
-        attention_mask = (input_ids != 6).long()  # pad_token_id = 6
+        attention_mask = attention_mask.to(CONFIG['device'])
         
-        #使用正确的全局步数
+        # 使用正确的全局步数
         global_step = current_global_step
         
         # 前向传播 - 使用LongSSM隐藏状态复用机制
@@ -152,18 +152,18 @@ def train_epoch(epoch, start_step, model, train_loader, optimizer, scaler,
                 # 获取当前序列
                 current_input_ids = input_ids[batch_idx:batch_idx+1]  # [1, seq_len]
                 current_labels = labels[batch_idx:batch_idx+1]  # [1, seq_len]
-                current_attention_mask = attention_mask[batch_idx:batch_idx+1] if attention_mask is not None else None
-                
+
                 # 第一个序列使用零初始化(inference_params=None),后续序列复用隐藏状态
                 if batch_idx == 0:
                     inference_params = None  # 第一个序列零初始化
                 # else: 复用上一个序列的inference_params
-                
+
                 # 前向传播
+                # Mamba2不需要attention_mask（因为labels中已经通过-100标记了需要计算loss的位置）
                 outputs = model(
                     input_ids=current_input_ids,
                     labels=current_labels,
-                    attention_mask=current_attention_mask,
+                    attention_mask=None,  # Mamba2架构不需要attention_mask
                     inference_params=inference_params,
                     use_cache=True  # 启用缓存以保存隐藏状态
                 )

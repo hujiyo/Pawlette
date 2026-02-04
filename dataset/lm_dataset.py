@@ -4,26 +4,34 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 def dynamic_collate_fn(batch):
     """
-    1.动态填充的collate函数，用于支持处理变长序列
-    2.只填充到批次内最大长度，不浪费计算资源    
-    3.使用Hugging Face标准的-100填充labels
+    动态填充的collate函数，用于支持处理变长序列
+    只填充到批次内最大长度，不浪费计算资源
+    使用Hugging Face标准的-100填充labels
+
+    Returns:
+        input_ids: [batch_size, max_len]
+        labels: [batch_size, max_len], padding位置为-100
+        attention_mask: [batch_size, max_len], 1表示有效token，0表示padding
     """
-    input_ids_list, labels_list, loss_mask_list = zip(*batch)    
+    input_ids_list, labels_list, attention_mask_list = zip(*batch)
     max_len = max(x.size(0) for x in input_ids_list)
-    # 动态填充到批次内最大长度
     batch_size = len(input_ids_list)
-    device = input_ids_list[0].device    
+    device = input_ids_list[0].device
+
     # 初始化填充后的张量
-    input_ids_padded = torch.full((batch_size, max_len), 6, dtype=torch.long, device=device)  # pad_token_id = 6
+    pad_token_id = 6  # [SEP]
+    input_ids_padded = torch.full((batch_size, max_len), pad_token_id, dtype=torch.long, device=device)
     labels_padded = torch.full((batch_size, max_len), -100, dtype=torch.long, device=device)
-    loss_mask_padded = torch.zeros(batch_size, max_len, dtype=torch.long, device=device)    
+    attention_mask_padded = torch.zeros(batch_size, max_len, dtype=torch.long, device=device)
+
     # 填充数据
-    for i, (input_ids, labels, mask) in enumerate(zip(input_ids_list, labels_list, loss_mask_list)):
+    for i, (input_ids, labels, attention_mask) in enumerate(zip(input_ids_list, labels_list, attention_mask_list)):
         seq_len = input_ids.size(0)
         input_ids_padded[i, :seq_len] = input_ids
         labels_padded[i, :seq_len] = labels
-        loss_mask_padded[i, :seq_len] = mask    
-    return input_ids_padded, labels_padded, loss_mask_padded
+        attention_mask_padded[i, :seq_len] = attention_mask
+
+    return input_ids_padded, labels_padded, attention_mask_padded
 
 class PretrainDataset(Dataset):
     def __init__(self, data_path, tokenizer, max_length=None):
@@ -53,7 +61,6 @@ class PretrainDataset(Dataset):
                 return_tensors='pt'
             )
             input_ids = encoding.input_ids.squeeze()
-            loss_mask = torch.ones_like(input_ids, dtype=torch.long)
         else:
             # 限制长度，截断和填充
             encoding = self.tokenizer(
@@ -64,10 +71,16 @@ class PretrainDataset(Dataset):
                 return_tensors='pt'
             )
             input_ids = encoding.input_ids.squeeze()
-            loss_mask = (input_ids != self.tokenizer.pad_token_id)
-        # 将pad token位置设为-100（Hugging Face标准）
-        labels = torch.where(input_ids == self.tokenizer.pad_token_id, -100, input_ids)
-        return input_ids, labels, loss_mask
+
+        # 预训练模式：所有非padding的token都参与训练
+        # labels中，padding位置设为-100（CrossEntropyLoss会忽略）
+        labels = input_ids.clone()
+        labels[labels == self.tokenizer.pad_token_id] = -100
+
+        # attention_mask: 1表示有效token，0表示padding
+        attention_mask = (input_ids != self.tokenizer.pad_token_id).long()
+
+        return input_ids, labels, attention_mask
 
 #当前项目暂时处于预训练阶段，所以下面的代码暂时用不到
 
@@ -107,9 +120,12 @@ class SFTDataset(Dataset):
             add_generation_prompt=False
         )
 
-    def _generate_loss_mask(self, input_ids):
-        """基于PCML协议的[AST]...<end>[/AST]标记生成loss mask"""
-        loss_mask = [0] * len(input_ids)
+    def _generate_labels(self, input_ids):
+        """基于PCML协议的[AST]...<end>[/AST]标记生成labels
+        只有assistant部分(从[AST]后到<end>)会计算loss，其余位置为-100
+        """
+        labels = torch.full_like(input_ids, -100, dtype=torch.long)
+
         i = 0
         while i < len(input_ids):
             # 查找 [AST] 开始标记
@@ -124,11 +140,11 @@ class SFTDataset(Dataset):
                 # 从 [AST] 后到 <end>（含）计算loss
                 end_with_token = min(end + len(self.end_id), len(input_ids))
                 for j in range(start, min(end_with_token, self.max_length)):
-                    loss_mask[j] = 1
+                    labels[j] = input_ids[j]
                 i = end + len(self.end_id) if end < len(input_ids) else len(input_ids)
             else:
                 i += 1
-        return loss_mask
+        return labels
 
     def __getitem__(self, index):
         sample = self.samples[index]
@@ -136,14 +152,15 @@ class SFTDataset(Dataset):
         prompt = self._create_chat_prompt(sample['conversations'])
         input_ids = self.tokenizer(prompt).input_ids[:self.max_length]
         input_ids += [self.tokenizer.pad_token_id] * (self.max_length - len(input_ids))
-
-        # 生成动态损失掩码
-        loss_mask = self._generate_loss_mask(input_ids)
         input_ids = torch.tensor(input_ids, dtype=torch.long)
-        labels = torch.where(input_ids == self.tokenizer.pad_token_id, -100, input_ids)
-        loss_mask = torch.tensor(loss_mask, dtype=torch.long)
 
-        return input_ids, labels, loss_mask
+        # 生成labels - 只在assistant部分计算loss
+        labels = self._generate_labels(input_ids)
+
+        # attention_mask: 1表示有效token，0表示padding
+        attention_mask = (input_ids != self.tokenizer.pad_token_id).long()
+
+        return input_ids, labels, attention_mask
 
 class DPODataset(Dataset):
     def __init__(self, file_path, tokenizer, max_length=4096):
@@ -185,25 +202,28 @@ class DPODataset(Dataset):
             rejected_prompt, truncation=True, max_length=self.max_length, padding='max_length'
         )
 
-        chosen_input_ids = chosen_encoding['input_ids']
-        chosen_loss_mask = self._generate_loss_mask(chosen_input_ids)
+        chosen_input_ids = torch.tensor(chosen_encoding['input_ids'], dtype=torch.long)
+        # DPO模式：只在assistant部分计算loss
+        chosen_loss_mask = self._generate_loss_mask(chosen_encoding['input_ids'])
+        y_chosen = torch.full_like(chosen_input_ids, -100, dtype=torch.long)
+        y_chosen[torch.tensor(chosen_loss_mask) == 1] = chosen_input_ids[torch.tensor(chosen_loss_mask) == 1]
 
-        rejected_input_ids = rejected_encoding['input_ids']
-        rejected_loss_mask = self._generate_loss_mask(rejected_input_ids)
-        x_chosen = torch.tensor(chosen_input_ids, dtype=torch.long)
-        y_chosen = torch.where(torch.tensor(chosen_input_ids) == self.padding, -100, torch.tensor(chosen_input_ids))
-        mask_chosen = torch.tensor(chosen_loss_mask, dtype=torch.long)
-        x_rejected = torch.tensor(rejected_input_ids, dtype=torch.long)
-        y_rejected = torch.where(torch.tensor(rejected_input_ids) == self.padding, -100, torch.tensor(rejected_input_ids))
-        mask_rejected = torch.tensor(rejected_loss_mask, dtype=torch.long)
+        rejected_input_ids = torch.tensor(rejected_encoding['input_ids'], dtype=torch.long)
+        rejected_loss_mask = self._generate_loss_mask(rejected_encoding['input_ids'])
+        y_rejected = torch.full_like(rejected_input_ids, -100, dtype=torch.long)
+        y_rejected[torch.tensor(rejected_loss_mask) == 1] = rejected_input_ids[torch.tensor(rejected_loss_mask) == 1]
+
+        # attention_mask: 1表示有效token，0表示padding
+        attention_mask_chosen = (chosen_input_ids != self.padding).long()
+        attention_mask_rejected = (rejected_input_ids != self.padding).long()
 
         return {
-            'x_chosen': x_chosen,
+            'x_chosen': chosen_input_ids,
             'y_chosen': y_chosen,
-            'mask_chosen': mask_chosen,
-            'x_rejected': x_rejected,
+            'attention_mask_chosen': attention_mask_chosen,
+            'x_rejected': rejected_input_ids,
             'y_rejected': y_rejected,
-            'mask_rejected': mask_rejected
+            'attention_mask_rejected': attention_mask_rejected
         }
 
     def _generate_loss_mask(self, input_ids):

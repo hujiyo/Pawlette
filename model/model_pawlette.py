@@ -30,7 +30,7 @@ class PawletteConfig(PretrainedConfig):
     def __init__(self, **kwargs):
         # 基础模型参数（用户可修改）
         self.vocab_size = 6420    # 词汇表大小
-        self.hidden_size = 640    # 隐藏层大小
+        self.hidden_size = 512    # 隐藏层大小
         self.d_state_size = 64     # SSM状态大小（所有层统一）
         self.conv_size = 4    # 卷积宽度
         self.expand_factor = 2    # 块扩展因子
@@ -43,7 +43,7 @@ class PawletteConfig(PretrainedConfig):
         
         # Mamba2参数
         self.dt_min = 0.001    # 最小时间步长
-        self.dt_max = 0.1    # 最大时间步长
+        self.dt_max = 0.5    # 最大时间步长
         self.dt_init_floor = 1e-4    # 初始时间步长
         self.dt_limit = (0.0, float('inf'))    # 时间步长限制
         
@@ -57,9 +57,9 @@ class PawletteConfig(PretrainedConfig):
         
         # 分块和头参数
         self.headdim = 64   # 每个头的维度
-        self.ngroups = 1    # SSM参数的组数
+        self.ngroups = 8    # SSM参数的组数,每两头共享一组参数
         self.d_ssm = self.d_state_size    # SSM状态大小，与state_size保持一致
-        self.chunk_size = 64    # 块大小用于分块处理 (优化内存使用)
+        self.chunk_size = 256    # 块大小用于分块处理 (优化内存使用)
         self.use_mem_eff_path = True    # 是否使用内存高效路径 (启用以优化内存)
         
         # 特殊token
@@ -178,7 +178,7 @@ class PawletteModelCore(nn.Module):
         hidden_states = self.embed_tokens(input_ids)        
         # 存储所有层的隐藏状态（如果需要）
         all_hidden_states = [] if output_hidden_states else None        
-        # 通过所有Mamba层
+        # 通过所有Mamba2层
         for layer_idx, layer in enumerate(self.layers):
             if output_hidden_states:
                 all_hidden_states.append(hidden_states)            
@@ -274,10 +274,14 @@ class PawletteModelLLM(PreTrainedModel, GenerationMixin):
         # 计算损失
         loss = None
         if labels is not None:
-            # Shift标签和logits
+            # Shift标签和logits（因果语言模型标准做法：预测下一个token）
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
-            
+
+            # 注意：labels中已经通过-100标记了需要忽略的位置
+            # Dataset负责生成正确的labels，模型直接使用即可
+            # 不需要attention_mask来做额外的mask处理
+
             # 展平 - 使用标准的ignore_index=-100
             loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
             loss = loss_fct(
