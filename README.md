@@ -57,6 +57,16 @@ PCML 是 Pawlette 的对话模板标准化规范，负责将 OpenAI 格式的消
 
 ## 技术特色
 
+### Mano
+Pawlette尝试性地集成了Mano优化器——一种很新的基于流形归一化的LLM训练优化器：
+- **核心创新**：旋转Oblique流形（交替进行列/行归一化）、切空间投影、低内存消耗
+- **优势**：相比AdamW内存减半，相比Muon计算开销更低，收敛速度更快
+- **效果**：暂未实际实验
+
+Mano论文参考：[Mano: Restriking Manifold Optimization for LLM Training](https://arxiv.org/abs/2601.23000)
+
+
+
 ### LongSSM隐藏状态复用机制
 Pawlette采用了来自LongSSM论文的技术改进：
 - **问题**：传统SSM使用零初始化隐藏状态在长度外推上表现不佳

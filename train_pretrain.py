@@ -23,7 +23,9 @@ CONFIG = {
     'accumulation_steps': 8,  # 增加梯度累积步数以保持有效批次大小
     'grad_clip': 1.0,
     'weight_decay': 0.01,
-    
+    'momentum': 0.95,  # Mano优化器动量系数
+    'optimizer': 'adamw',  # 优化器选择: 'adamw' 或 'mano'
+
     # 数据配置
     'data_path': 'dataset/pretrain_data.jsonl',
     'max_seq_len': None,  # 不限制序列长度
@@ -70,7 +72,7 @@ def get_cosine_schedule_with_warmup(current_step, num_warmup_steps, num_training
     return lr_mult
 
 def save_checkpoint(epoch, step, model, optimizer, scaler, save_path, global_step=None):
-    """保存检查点"""
+    """保存检查点（兼容HybridManoAdamW和标准优化器）"""
     state = {
         'epoch': epoch,
         'step': step,
@@ -79,28 +81,42 @@ def save_checkpoint(epoch, step, model, optimizer, scaler, save_path, global_ste
         'optimizer_state_dict': optimizer.state_dict(),
         'scaler_state_dict': scaler.state_dict(),
         'config': model.module.config if isinstance(model, DistributedDataParallel) else model.config,
+        'optimizer_type': CONFIG['optimizer'],  # 新增：记录优化器类型
     }
     torch.save(state, save_path)
     Logger(f"✅ 已保存检查点至 {save_path}")
 
 def load_checkpoint(model, optimizer, scaler, checkpoint_path, device, strict=True):
-    """加载检查点"""
+    """加载检查点（支持优化器类型切换）"""
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     # 加载模型状态
     if isinstance(model, DistributedDataParallel):
         model.module.load_state_dict(checkpoint['model_state_dict'], strict=strict)
     else:
-        model.load_state_dict(checkpoint['model_state_dict'], strict=strict)  
-    # 加载优化器和scaler状态
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    scaler.load_state_dict(checkpoint['scaler_state_dict'])
-    
+        model.load_state_dict(checkpoint['model_state_dict'], strict=strict)
+
+    # 检查优化器类型是否匹配
+    saved_optimizer_type = checkpoint.get('optimizer_type', 'adamw')
+    current_optimizer_type = CONFIG.get('optimizer', 'adamw')
+
+    if saved_optimizer_type != current_optimizer_type:
+        Logger(f"⚠️  优化器类型不匹配: checkpoint使用{saved_optimizer_type}，当前配置{current_optimizer_type}")
+        Logger("   重新初始化优化器状态")
+        # 不加载优化器状态，使用新初始化的优化器
+        # scaler状态仍然加载
+        if 'scaler_state_dict' in checkpoint:
+            scaler.load_state_dict(checkpoint['scaler_state_dict'])
+    else:
+        # 加载优化器和scaler状态
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        scaler.load_state_dict(checkpoint['scaler_state_dict'])
+
     start_epoch = checkpoint.get('epoch', 0)
     start_step = checkpoint.get('step', 0)
     start_global_step = checkpoint.get('global_step', 0)  # 新增：加载全局步数
     Logger(f"✅ 已从 {checkpoint_path} 加载检查点")
     Logger(f"   继续训练: epoch={start_epoch}, step={start_step}, global_step={start_global_step}")
-    
+
     return start_epoch, start_step, start_global_step
 
 def train_epoch(epoch, start_step, model, train_loader, optimizer, scaler, 
@@ -282,6 +298,42 @@ def init_model():
     Logger(f"📊 模型参数量: {params['trainable_M']:.2f}M (可训练) / {params['total_M']:.2f}M (总计)")
     return model, tokenizer, config, loaded_pretrained
 
+def get_optimizer_param_groups(model):
+    """
+    根据参数类型分组，为混合优化器做准备
+
+    遵循论文建议：
+    - Embedding和LM Head使用AdamW（稀疏激活，需要自适应学习率）
+    - 1D参数（RMSNorm, bias）使用AdamW
+    - 2D权重矩阵使用Mano（流形优化）
+
+    参数：
+        model: Pawlette模型
+
+    返回：
+        tuple: (mano_params, adamw_params)
+    """
+    mano_params = []
+    adamw_params = []
+
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+
+        # Embedding和LM Head使用AdamW
+        if 'embed_tokens' in name or 'lm_head' in name:
+            adamw_params.append(param)
+        # 1D参数（RMSNorm, bias）使用AdamW
+        elif param.dim() < 2:
+            adamw_params.append(param)
+        # 2D权重矩阵使用Mano
+        elif param.dim() >= 2:
+            mano_params.append(param)
+        else:
+            adamw_params.append(param)
+
+    return mano_params, adamw_params
+
 def init_distributed_mode():
     """初始化分布式训练"""
     if not CONFIG['ddp']:
@@ -365,13 +417,35 @@ def main():
     
     # 保存实际学习率到CONFIG，供学习率调度器使用
     CONFIG['actual_learning_rate'] = actual_lr
-    
-    optimizer = optim.AdamW(
-        model.parameters(),
-        lr=actual_lr,
-        weight_decay=CONFIG['weight_decay'],
-        betas=(0.9, 0.95),
-    )
+
+    # 根据配置选择优化器
+    if CONFIG['optimizer'] == 'mano':
+        Logger("🔧 使用Mano优化器（混合Mano + AdamW）")
+        from optimizers import HybridManoAdamW
+
+        mano_params, adamw_params = get_optimizer_param_groups(model)
+
+        optimizer = HybridManoAdamW(
+            mano_params=mano_params,
+            adamw_params=adamw_params,
+            lr=actual_lr,
+            momentum=CONFIG['momentum'],
+            weight_decay=CONFIG['weight_decay']
+        )
+
+        mano_count = sum(p.numel() for p in mano_params)
+        adamw_count = sum(p.numel() for p in adamw_params)
+        Logger(f"   📊 Mano优化参数: {mano_count / 1e6:.2f}M")
+        Logger(f"   📊 AdamW优化参数: {adamw_count / 1e6:.2f}M")
+
+    else:  # 'adamw' 或默认
+        Logger("🔧 使用AdamW优化器")
+        optimizer = optim.AdamW(
+            model.parameters(),
+            lr=actual_lr,
+            weight_decay=CONFIG['weight_decay'],
+            betas=(0.9, 0.95),
+        )
     
     # 混合精度训练（bfloat16 + CUDA）
     scaler = torch.cuda.amp.GradScaler()
